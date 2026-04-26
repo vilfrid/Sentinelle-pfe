@@ -1,0 +1,52 @@
+# Docs
+CAHIER DES CHARGES.docx
+DEMARRAGE.md
+README.md
+
+# Test / prototype scripts (contain hardcoded tokens)
+test/
+
+# Environment
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Database
+*.db
+*.sqlite3
+
+# Data (scraped / processed)
+data/raw/
+data/processed/
+data/final/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user

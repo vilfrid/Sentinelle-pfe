@@ -11,19 +11,45 @@ Full automated pipeline:
       ↓  compute aggregate stats (mood, pct, topics)
 """
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 
-from celery import chain, group, chord
+import redis as redis_lib
+
+from celery import group, chord
 from workers.celery_app import celery_app
 from app.database import get_sync_db
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# ── Redis log buffer ──────────────────────────────────────────────────────────
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+_redis = redis_lib.from_url(settings.REDIS_URL, decode_responses=True)
+_LOG_KEY = "pipeline:logs:{}"
+_LOG_MAX = 200
+
+
+def _log(creator_id: int, step: str, status: str, msg: str):
+    """Push a log entry to Redis. status: info | ok | warn | error"""
+    entry = json.dumps({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "step": step,
+        "status": status,
+        "msg": msg,
+    })
+    key = _LOG_KEY.format(creator_id)
+    _redis.lpush(key, entry)
+    _redis.ltrim(key, 0, _LOG_MAX - 1)
+    _redis.expire(key, 86400)  # 24h TTL
+
+
+def clear_logs(creator_id: int):
+    _redis.delete(_LOG_KEY.format(creator_id))
+
+
+# ── DB helpers ────────────────────────────────────────────────────────────────
 
 def _set_creator_status(creator_id: int, status: str, error: str = None):
     db = get_sync_db()
@@ -59,17 +85,48 @@ def _get_creator(creator_id: int):
         db.close()
 
 
+def _update_post_status(post_id: int, status: str, raw_data_path: str = None):
+    db = get_sync_db()
+    try:
+        from app.models.post import Post
+        post = db.get(Post, post_id)
+        if post:
+            post.etl_status = status
+            if raw_data_path:
+                post.raw_data_path = raw_data_path
+            db.commit()
+    finally:
+        db.close()
+
+
 # ── Task 1: discover all posts for a creator ──────────────────────────────────
 
 @celery_app.task(bind=True, name="workers.tasks.launch_creator_pipeline")
 def launch_creator_pipeline(self, creator_id: int):
-    """Entry point: discovers posts then fans out one task per post."""
+    clear_logs(creator_id)
+    _log(creator_id, "init", "info", "Pipeline started")
+
     info = _get_creator(creator_id)
     if not info:
+        _log(creator_id, "init", "error", "Creator not found in DB")
         return {"error": "creator not found"}
 
+    _log(creator_id, "init", "info", f"Creator: @{info['username']} | platform: {info['platform']}")
+    _log(creator_id, "init", "info", f"Profile URL: {info['profile_url'] or '(none — using username)'}")
+
+    if info["platform"] == "instagram":
+        has_session = bool(settings.INSTAGRAM_SESSION_ID)
+        _log(creator_id, "discover", "info" if has_session else "warn",
+             f"INSTAGRAM_SESSION_ID: {'present' if has_session else 'MISSING — will scrape as guest (likely 0 posts)'}")
+
+    if info["platform"] == "youtube":
+        _log(creator_id, "discover", "info", "YouTube: no auth needed")
+
+    if info["platform"] == "tiktok":
+        _log(creator_id, "discover", "info", "TikTok: using persistent browser session")
+
     _set_creator_status(creator_id, "discovering")
-    logger.info("Discovering posts for creator %s (%s)", info["username"], info["platform"])
+    _log(creator_id, "discover", "info", "Launching browser to discover posts...")
 
     try:
         identifier = info["profile_url"] or info["username"]
@@ -77,22 +134,32 @@ def launch_creator_pipeline(self, creator_id: int):
         if info["platform"] == "instagram":
             kwargs["session_id"] = settings.INSTAGRAM_SESSION_ID
 
-        posts = asyncio.run(
+        result = asyncio.run(
             __import__("scraping.profile_scraper", fromlist=["discover_posts"])
             .discover_posts(info["platform"], identifier, **kwargs)
         )
+        posts = result if isinstance(result, list) else result.get("posts", [])
+        page_title = result.get("page_title", "") if isinstance(result, dict) else ""
+        if page_title:
+            _log(creator_id, "discover", "info", f"Browser saw page: \"{page_title}\"")
+        _log(creator_id, "discover", "ok" if posts else "warn",
+             f"Discovery complete: found {len(posts)} post(s)")
+
     except Exception as exc:
+        _log(creator_id, "discover", "error", f"Discovery crashed: {exc}")
         _set_creator_status(creator_id, "error", str(exc))
         logger.exception("Discovery failed for creator %d", creator_id)
         raise self.retry(exc=exc)
 
     if not posts:
+        _log(creator_id, "discover", "warn",
+             "0 posts found. Possible causes: session expired, private account, bot detection, or wrong URL")
         _set_creator_status(creator_id, "done")
         return {"discovered": 0}
 
     _set_creator_status(creator_id, "scraping")
+    _log(creator_id, "scrape", "info", f"Fanning out {len(posts)} post tasks in parallel...")
 
-    # Fan out: one task per post, then finalize
     post_tasks = group(
         scrape_and_process_post.s(p["url"], p["external_id"], info["platform"], creator_id)
         for p in posts
@@ -100,22 +167,22 @@ def launch_creator_pipeline(self, creator_id: int):
     workflow = chord(post_tasks)(finalize_creator.s(creator_id))
     workflow.apply_async()
 
-    logger.info("Launched %d post tasks for creator %d", len(posts), creator_id)
     return {"discovered": len(posts)}
 
 
-# ── Task 2: scrape one post + run ETL + sentiment ─────────────────────────────
+# ── Task 2: scrape one post + ETL + sentiment ─────────────────────────────────
 
 @celery_app.task(bind=True, name="workers.tasks.scrape_and_process_post")
 def scrape_and_process_post(self, url: str, external_id: str, platform: str, creator_id: int):
-    """Scrape a single post URL then run ETL + sentiment inline."""
     from app.models.post import Post
     from app.models.platform import Platform
     from app.models.creator import Creator
 
+    short_url = url.split("?")[0][-60:]
+
+    # ── DB setup ──
     db = get_sync_db()
     try:
-        # Resolve platform_id
         platform_obj = db.query(Platform).filter(Platform.name == platform).first()
         if not platform_obj:
             platform_obj = Platform(name=platform, display_name=platform.capitalize())
@@ -126,12 +193,11 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
         creator = db.get(Creator, creator_id)
         campaign_id = creator.campaign_id if creator else None
 
-        # Skip if already scraped
         existing = db.query(Post).filter(Post.external_id == external_id).first()
         if existing:
+            _log(creator_id, "scrape", "info", f"Skipped (already scraped): {short_url}")
             return {"post_id": existing.id, "skipped": True}
 
-        # Create post record
         post = Post(
             platform_id=platform_obj.id,
             campaign_id=campaign_id,
@@ -147,38 +213,65 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
     finally:
         db.close()
 
-    # Scrape
+    # ── Scrape ──
+    _log(creator_id, "scrape", "info", f"Scraping: {short_url}")
     try:
         scraper_map = {
             "instagram": "scraping.instagram.InstagramScraper",
-            "tiktok": "scraping.tiktok.TikTokScraper",
-            "youtube": "scraping.youtube.YouTubeScraper",
-            "facebook": "scraping.facebook.FacebookScraper",
+            "tiktok":    "scraping.tiktok.TikTokScraper",
+            "youtube":   "scraping.youtube.YouTubeScraper",
         }
         module_path, cls_name = scraper_map[platform].rsplit(".", 1)
         mod = __import__(module_path, fromlist=[cls_name])
         scraper = getattr(mod, cls_name)()
         jsonl_path = asyncio.run(scraper.scrape(url))
+        _log(creator_id, "scrape", "ok", f"Scraped → {jsonl_path}")
     except Exception as exc:
-        logger.exception("Scrape failed for %s", url)
+        _log(creator_id, "scrape", "error", f"Scraper crashed on {short_url}: {exc}")
         _update_post_status(post_id, "scrape_failed")
         return {"post_id": post_id, "error": str(exc)}
 
-    # Store raw data path
     _update_post_status(post_id, "scraped", raw_data_path=str(jsonl_path))
 
-    # ETL
+    # ── ETL clean ──
+    _log(creator_id, "etl", "info", f"Running ETL cleaner ({platform})...")
     try:
         from etl.cleaners import CLEANERS
-        from etl.transformers.arabizi_transformer import ArabiziTransformer
-        from app.models.comment import Comment
-
         cleaner = CLEANERS[platform]()
         raw_comments = cleaner.extract_comments(jsonl_path)
+        _log(creator_id, "etl", "ok" if raw_comments else "warn",
+             f"Cleaner extracted {len(raw_comments)} comment(s)" +
+             (" — JSONL may be empty or format mismatch" if not raw_comments else ""))
+    except Exception as exc:
+        _log(creator_id, "etl", "error", f"Cleaner crashed: {exc}")
+        _update_post_status(post_id, "etl_failed")
+        return {"post_id": post_id, "error": str(exc)}
+
+    if not raw_comments:
+        _update_post_status(post_id, "etl_failed")
+        return {"post_id": post_id, "error": "0 comments extracted"}
+
+    # ── Arabizi transform ──
+    _log(creator_id, "arabizi", "info",
+         f"Sending {len(raw_comments)} texts to Gemma 3 27B (GOOGLE_API_KEY: "
+         f"{'present' if settings.GOOGLE_API_KEY else 'MISSING'})...")
+    try:
+        from etl.transformers.arabizi_transformer import ArabiziTransformer
         transformer = ArabiziTransformer()
         texts = [c["raw_text"] for c in raw_comments]
         arabized = transformer.transform_batch(texts)
+        ignored = sum(1 for a in arabized if transformer.is_ignored(a))
+        _log(creator_id, "arabizi", "ok",
+             f"Transformed {len(arabized)} texts — {ignored} ignored (pure foreign), "
+             f"{len(arabized) - ignored} kept as Arabic")
+    except Exception as exc:
+        _log(creator_id, "arabizi", "error", f"Arabizi transformer crashed: {exc}")
+        arabized = [""] * len(raw_comments)
 
+    # ── Store comments ──
+    _log(creator_id, "etl", "info", "Saving comments to DB...")
+    try:
+        from app.models.comment import Comment
         db = get_sync_db()
         try:
             stored = 0
@@ -201,16 +294,18 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
                 db.add(c)
                 stored += 1
             db.commit()
+            _log(creator_id, "etl", "ok", f"Stored {stored} new comment(s) in DB")
         finally:
             db.close()
-
         _update_post_status(post_id, "transformed")
     except Exception as exc:
-        logger.exception("ETL failed for post %d", post_id)
+        _log(creator_id, "etl", "error", f"DB store failed: {exc}")
         _update_post_status(post_id, "etl_failed")
         return {"post_id": post_id, "error": str(exc)}
 
-    # Sentiment
+    # ── Sentiment ──
+    _log(creator_id, "sentiment", "info",
+         f"Sending to AI engine ({settings.AI_ENGINE_URL}) — fallback to heuristic if unreachable...")
     try:
         from app.models.comment import Comment
         from analytics.sentiment_client import SentimentClient
@@ -242,22 +337,31 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
             finally:
                 db.close()
 
+            pos = sum(1 for r in results if r and r.label == "positive")
+            neg = sum(1 for r in results if r and r.label == "negative")
+            _log(creator_id, "sentiment", "ok",
+                 f"Analyzed {len(results)} comments — {pos} positive, {neg} negative, "
+                 f"{len(results)-pos-neg} neutral")
+        else:
+            _log(creator_id, "sentiment", "warn", "No comments to analyze for sentiment")
+
         _update_post_status(post_id, "analyzed")
     except Exception as exc:
-        logger.exception("Sentiment failed for post %d", post_id)
+        _log(creator_id, "sentiment", "error", f"Sentiment analysis crashed: {exc}")
 
     return {"post_id": post_id, "done": True}
 
 
-# ── Task 3: aggregate stats back onto the Creator ─────────────────────────────
+# ── Task 3: finalize ──────────────────────────────────────────────────────────
 
 @celery_app.task(name="workers.tasks.finalize_creator")
 def finalize_creator(results, creator_id: int):
-    """Called after all posts are processed. Aggregates stats onto Creator."""
     from app.models.creator import Creator
     from app.models.post import Post
     from app.models.comment import Comment
     from analytics.topics_engine import extract_trending_topics
+
+    _log(creator_id, "finalize", "info", "All posts processed — aggregating stats...")
 
     db = get_sync_db()
     try:
@@ -272,7 +376,7 @@ def finalize_creator(results, creator_id: int):
         total = len(comments)
         positive = sum(1 for c in comments if c.sentiment == "positive")
         negative = sum(1 for c in comments if c.sentiment == "negative")
-        neutral = total - positive - negative
+        neutral  = total - positive - negative
         avg_score = (
             sum(c.sentiment_score for c in comments if c.sentiment_score is not None) / total
             if total > 0 else 0.0
@@ -302,22 +406,8 @@ def finalize_creator(results, creator_id: int):
         creator.last_pipeline_at = datetime.now(timezone.utc)
         db.commit()
 
-        logger.info("Creator %d finalized: %d posts, %d comments, mood=%s", creator_id, len(posts), total, mood)
-    finally:
-        db.close()
-
-
-# ── helper ────────────────────────────────────────────────────────────────────
-
-def _update_post_status(post_id: int, status: str, raw_data_path: str = None):
-    db = get_sync_db()
-    try:
-        from app.models.post import Post
-        post = db.get(Post, post_id)
-        if post:
-            post.etl_status = status
-            if raw_data_path:
-                post.raw_data_path = raw_data_path
-            db.commit()
+        _log(creator_id, "finalize", "ok",
+             f"Done — {len(posts)} posts, {total} comments, mood: {mood} "
+             f"({positive} pos / {negative} neg / {neutral} neutral)")
     finally:
         db.close()

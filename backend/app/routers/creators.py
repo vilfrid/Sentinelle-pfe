@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List
+from urllib.parse import urlparse
 
 from app.database import get_db
 from app.models.creator import Creator
@@ -11,6 +12,17 @@ from app.models.comment import Comment
 from app.schemas.creator import CreatorCreate, CreatorOut
 
 router = APIRouter()
+
+
+def _extract_username(raw: str, platform: str) -> str:
+    """Extract plain username from a URL or @handle."""
+    raw = raw.strip().lstrip("@")
+    if raw.startswith("http"):
+        path = urlparse(raw).path.rstrip("/")
+        # last non-empty path segment, strip leading @
+        username = path.split("/")[-1].lstrip("@")
+        return username or raw
+    return raw
 
 
 @router.get("/", response_model=List[CreatorOut])
@@ -28,11 +40,12 @@ async def add_creator(payload: CreatorCreate, db: AsyncSession = Depends(get_db)
         db.add(platform)
         await db.flush()
 
+    username = _extract_username(payload.username, payload.platform)
     creator = Creator(
         platform_id=platform.id,
         campaign_id=payload.campaign_id,
-        username=payload.username.lstrip("@"),
-        profile_url=payload.profile_url or _default_url(payload.platform, payload.username),
+        username=username,
+        profile_url=payload.profile_url or _default_url(payload.platform, username),
         status="idle",
     )
     db.add(creator)
@@ -142,5 +155,4 @@ def _default_url(platform: str, username: str) -> str:
         "instagram": f"https://www.instagram.com/{username}/",
         "tiktok": f"https://www.tiktok.com/@{username}",
         "youtube": f"https://www.youtube.com/@{username}/videos",
-        "facebook": f"https://www.facebook.com/{username}",
     }.get(platform, "")

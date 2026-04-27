@@ -2,7 +2,7 @@ import { NavLink } from "react-router-dom";
 import { clsx } from "clsx";
 import {
   LayoutDashboard, Megaphone, Users2, MessageSquare,
-  BarChart3, FileText, GitMerge
+  BarChart3, FileText, GitMerge, Terminal
 } from "lucide-react";
 
 const NAV = [
@@ -13,6 +13,7 @@ const NAV = [
   { to: "/analytics",  icon: BarChart3,        label: "Analytics" },
   { to: "/reports",    icon: FileText,         label: "Reports" },
   { to: "/matching",   icon: GitMerge,         label: "Matching" },
+  { to: "/pipeline",   icon: Terminal,         label: "Pipeline" },
 ];
 
 export default function Sidebar() {

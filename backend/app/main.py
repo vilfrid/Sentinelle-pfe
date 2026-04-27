@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import init_db
 from app.routers import (
-    campaigns, creators, analytics, reports, dashboard, matching, comments
+    campaigns, creators, analytics, reports, dashboard, matching, comments, pipeline
 )
 
 
@@ -36,6 +36,7 @@ app.include_router(reports.router,    prefix="/api/reports",    tags=["reports"]
 app.include_router(dashboard.router,  prefix="/api/dashboard",  tags=["dashboard"])
 app.include_router(matching.router,   prefix="/api/matching",   tags=["matching"])
 app.include_router(comments.router,   prefix="/api/comments",   tags=["comments"])
+app.include_router(pipeline.router,   prefix="/api/pipeline",   tags=["pipeline"])
 
 
 @app.get("/api/health")

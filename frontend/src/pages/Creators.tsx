@@ -5,7 +5,7 @@ import { getCreators, addCreator, deleteCreator, refreshCreator, getCampaigns } 
 import { Plus, RefreshCw, Trash2, ChevronRight, Loader, CheckCircle, AlertCircle, Search } from "lucide-react";
 import { clsx } from "clsx";
 
-const PLATFORMS = ["instagram", "tiktok", "youtube", "facebook"];
+const PLATFORMS = ["instagram", "tiktok", "youtube"];
 
 type Creator = {
   id: number; username: string; display_name?: string; platform_id: number;
@@ -48,8 +48,10 @@ export default function Creators() {
   const { data: creators = [], isLoading } = useQuery({
     queryKey: ["creators"],
     queryFn: getCreators,
-    refetchInterval: (data: Creator[]) =>
-      (data ?? []).some((c) => ["discovering","scraping","processing"].includes(c.status)) ? 4000 : false,
+    refetchInterval: (query) => {
+      const data = query.state.data as Creator[] | undefined;
+      return (data ?? []).some((c) => ["discovering", "scraping", "processing"].includes(c.status)) ? 4000 : false;
+    },
   });
 
   const { data: campaigns = [] } = useQuery({ queryKey: ["campaigns"], queryFn: getCampaigns });

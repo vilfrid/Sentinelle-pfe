@@ -46,4 +46,8 @@ export const matchInfluencers = (campaignId: number, topK = 10) =>
 export const getComments = (campaignId: number, sentiment?: string) =>
   api.get("/comments/", { params: { campaign_id: campaignId, ...(sentiment ? { sentiment } : {}) } }).then((r) => r.data);
 
+// --- Pipeline Debug ---
+export const getPipelineStatus = () => api.get("/pipeline/status").then((r) => r.data);
+export const getCreatorLogs   = (id: number) => api.get(`/pipeline/logs/${id}`).then((r) => r.data);
+
 export default api;

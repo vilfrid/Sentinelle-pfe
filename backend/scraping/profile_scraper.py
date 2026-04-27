@@ -13,53 +13,97 @@ from playwright.async_api import async_playwright
 
 logger = logging.getLogger(__name__)
 
+_IG_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "X-IG-App-ID": "936619743392459",
+    "Accept": "*/*",
+    "Accept-Language": "fr-FR,fr;q=0.9",
+    "Referer": "https://www.instagram.com/",
+    "Origin": "https://www.instagram.com",
+}
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _normalize(username: str) -> str:
     return username.lstrip("@").strip()
 
 
-# ── Instagram ─────────────────────────────────────────────────────────────────
+# ── Instagram — intercept the GraphQL query Instagram web actually uses ────────
 
-async def discover_instagram(username_or_url: str, session_id: str = "") -> List[Dict]:
+async def discover_instagram(username_or_url: str, session_id: str = "") -> Dict:
     username = _normalize(username_or_url.rstrip("/").split("/")[-1])
     profile_url = f"https://www.instagram.com/{username}/"
     posts: List[Dict] = []
+    page_title = ""
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        ctx = await browser.new_context()
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--window-size=1280,900",
+            ],
+        )
+        ctx = await browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            locale="fr-FR",
+            timezone_id="Africa/Tunis",
+        )
+        await ctx.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+        )
         if session_id:
             await ctx.add_cookies([{
                 "name": "sessionid", "value": session_id,
                 "domain": ".instagram.com", "path": "/",
+                "httpOnly": True, "secure": True,
             }])
         page = await ctx.new_page()
 
         async def intercept(response):
-            if "/api/v1/feed/user/" in response.url or "PolarisProfilePostsQuery" in response.url:
-                try:
-                    body = await response.json()
-                    items = body.get("items", []) or []
-                    for item in items:
-                        pk = item.get("pk") or item.get("id")
-                        code = item.get("code")
-                        media_type = item.get("media_type", 1)
-                        if pk:
-                            url = f"https://www.instagram.com/p/{code}/" if code else f"https://www.instagram.com/p/{pk}/"
-                            posts.append({"url": url, "external_id": str(pk)})
-                except Exception:
-                    pass
+            if "/graphql/query" not in response.url:
+                return
+            try:
+                body = await response.json()
+                # modern web: xdt_api__v1__feed__user_timeline_graphql_connection
+                edges = (
+                    body.get("data", {})
+                    .get("xdt_api__v1__feed__user_timeline_graphql_connection", {})
+                    .get("edges", [])
+                )
+                for edge in edges:
+                    node = edge.get("node", {})
+                    pk   = str(node.get("pk") or node.get("id", ""))
+                    code = node.get("code")
+                    if pk:
+                        url = f"https://www.instagram.com/p/{code}/" if code else f"https://www.instagram.com/p/{pk}/"
+                        if not any(p["external_id"] == pk for p in posts):
+                            posts.append({"url": url, "external_id": pk})
+                            logger.debug("Instagram found post: %s", url)
+            except Exception:
+                pass
 
         page.on("response", intercept)
-        await page.goto(profile_url, wait_until="networkidle", timeout=30_000)
+
+        try:
+            await page.goto(profile_url, wait_until="domcontentloaded", timeout=30_000)
+        except Exception:
+            pass
+        await asyncio.sleep(4)
+        page_title = await page.title()
+
+        # scroll to trigger more GraphQL loads
         for _ in range(6):
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await asyncio.sleep(2)
+
         await browser.close()
 
-    logger.info("Instagram profile %s: found %d posts", username, len(posts))
-    return posts
+    logger.info("Instagram @%s: found %d posts (page: %s)", username, len(posts), page_title)
+    return {"posts": posts, "page_title": page_title}
 
 
 # ── TikTok ────────────────────────────────────────────────────────────────────
@@ -92,7 +136,11 @@ async def discover_tiktok(username_or_url: str) -> List[Dict]:
                     pass
 
         page.on("response", intercept)
-        await page.goto(profile_url, wait_until="networkidle", timeout=30_000)
+        try:
+            await page.goto(profile_url, wait_until="domcontentloaded", timeout=30_000)
+        except Exception:
+            pass
+        await asyncio.sleep(3)
         for _ in range(8):
             await page.mouse.wheel(0, 3000)
             await asyncio.sleep(1.5)
@@ -136,7 +184,11 @@ async def discover_youtube(channel_url: str) -> List[Dict]:
                     pass
 
         page.on("response", intercept)
-        await page.goto(channel_url, wait_until="networkidle", timeout=30_000)
+        try:
+            await page.goto(channel_url, wait_until="domcontentloaded", timeout=30_000)
+        except Exception:
+            pass
+        await asyncio.sleep(3)
         no_new = 0
         prev = 0
         for _ in range(15):
@@ -155,51 +207,13 @@ async def discover_youtube(channel_url: str) -> List[Dict]:
     return posts
 
 
-# ── Facebook ──────────────────────────────────────────────────────────────────
-
-async def discover_facebook(page_url: str, cookies: list = None) -> List[Dict]:
-    if not page_url.startswith("http"):
-        page_url = f"https://www.facebook.com/{page_url}"
-    posts: List[Dict] = []
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        ctx = await browser.new_context()
-        if cookies:
-            await ctx.add_cookies(cookies)
-        page = await ctx.new_page()
-
-        async def intercept(response):
-            if "/api/graphql/" in response.url:
-                try:
-                    text = await response.text()
-                    for match in re.finditer(r'"post_id"\s*:\s*"(\d+)"', text):
-                        pid = match.group(1)
-                        url = f"https://www.facebook.com/permalink.php?story_fbid={pid}"
-                        if not any(p["external_id"] == pid for p in posts):
-                            posts.append({"url": url, "external_id": pid})
-                except Exception:
-                    pass
-
-        page.on("response", intercept)
-        await page.goto(page_url, wait_until="networkidle", timeout=30_000)
-        for _ in range(8):
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(2)
-        await browser.close()
-
-    logger.info("Facebook page %s: found %d posts", page_url, len(posts))
-    return posts
-
-
 # ── dispatcher ────────────────────────────────────────────────────────────────
 
-async def discover_posts(platform: str, identifier: str, **kwargs) -> List[Dict]:
+async def discover_posts(platform: str, identifier: str, **kwargs):
     dispatch = {
         "instagram": discover_instagram,
         "tiktok": discover_tiktok,
         "youtube": discover_youtube,
-        "facebook": discover_facebook,
     }
     fn = dispatch.get(platform)
     if not fn:

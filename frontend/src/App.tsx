@@ -8,6 +8,7 @@ import Comments from "./pages/Comments";
 import Analytics from "./pages/Analytics";
 import Reports from "./pages/Reports";
 import Matching from "./pages/Matching";
+import Pipeline from "./pages/Pipeline";
 
 export default function App() {
   return (
@@ -21,7 +22,8 @@ export default function App() {
         <Route path="/comments"         element={<Comments />} />
         <Route path="/analytics"        element={<Analytics />} />
         <Route path="/reports"          element={<Reports />} />
-        <Route path="/matching"         element={<Matching />} />
+        <Route path="/matching"          element={<Matching />} />
+        <Route path="/pipeline"          element={<Pipeline />} />
       </Route>
     </Routes>
   );

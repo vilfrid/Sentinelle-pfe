@@ -31,8 +31,10 @@ export default function CreatorProfile() {
   const { data: creator, isLoading } = useQuery({
     queryKey: ["creator", creatorId],
     queryFn: () => getCreator(creatorId),
-    refetchInterval: (data) =>
-      data && ["discovering","scraping","processing"].includes(data.status) ? 3000 : false,
+    refetchInterval: (query) => {
+      const data = query.state.data as { status: string } | undefined;
+      return data && ["discovering", "scraping", "processing"].includes(data.status) ? 3000 : false;
+    },
   });
 
   const { data: posts = [] } = useQuery({

@@ -299,10 +299,12 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
         transformer = ArabiziTransformer()
         texts = [c["raw_text"] for c in raw_comments]
         arabized = transformer.transform_batch(texts)
-        ignored = sum(1 for a in arabized if transformer.is_ignored(a))
-        _log(creator_id, "arabizi", "ok",
-             f"Transformed {len(arabized)} texts — {ignored} ignored (pure foreign), "
-             f"{len(arabized) - ignored} kept as Arabic")
+        ignored   = sum(1 for a in arabized if transformer.is_ignored(a))
+        filled    = sum(1 for a in arabized if a and not transformer.is_ignored(a))
+        empty     = len(arabized) - ignored - filled
+        _log(creator_id, "arabizi", "ok" if filled > 0 else "warn",
+             f"Transformed {len(arabized)} texts — {filled} arabized, "
+             f"{ignored} ignored (foreign), {empty} empty (parse failure)")
     except Exception as exc:
         _log(creator_id, "arabizi", "error", f"Arabizi transformer crashed: {exc}")
         arabized = [""] * len(raw_comments)

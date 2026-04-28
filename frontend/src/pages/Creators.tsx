@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { getCreators, addCreator, deleteCreator, refreshCreator, resetCreator, stopCreator, getCampaigns } from "../services/api";
-import { Plus, RefreshCw, Trash2, ChevronRight, Loader, CheckCircle, AlertCircle, Search, Square } from "lucide-react";
+import { getCreators, addCreator, deleteCreator, refreshCreator, resetCreator, stopCreator, restartCreator, getCampaigns } from "../services/api";
+import { Plus, RefreshCw, Trash2, ChevronRight, Loader, CheckCircle, AlertCircle, Search, Square, RotateCcw } from "lucide-react";
 import { clsx } from "clsx";
 
 const PLATFORMS = ["instagram", "tiktok", "youtube"];
@@ -48,6 +48,7 @@ export default function Creators() {
   const { data: creators = [], isLoading } = useQuery({
     queryKey: ["creators"],
     queryFn: getCreators,
+    placeholderData: (prev: Creator[] | undefined) => prev,
     refetchInterval: (query) => {
       const data = query.state.data as Creator[] | undefined;
       return (data ?? []).some((c) => ["discovering", "scraping", "processing"].includes(c.status)) ? 4000 : false;
@@ -65,24 +66,54 @@ export default function Creators() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["creators"] }); setShowForm(false); setForm({ username: "", platform: "instagram", campaign_id: "" }); },
   });
 
+  const patchCreator = (id: number, patch: Partial<Creator>) =>
+    qc.setQueryData(["creators"], (old: Creator[] | undefined) =>
+      (old ?? []).map((c) => (c.id === id ? { ...c, ...patch } : c))
+    );
+
+  const removeCreatorFromCache = (id: number) =>
+    qc.setQueryData(["creators"], (old: Creator[] | undefined) =>
+      (old ?? []).filter((c) => c.id !== id)
+    );
+
   const remove = useMutation({
     mutationFn: (id: number) => deleteCreator(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["creators"] }),
+    onMutate: (id) => removeCreatorFromCache(id),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["creators"] }),
   });
 
   const refresh = useMutation({
     mutationFn: (id: number) => refreshCreator(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["creators"] }),
+    onMutate: (id) => patchCreator(id, { status: "discovering", error_message: undefined }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["creators"] }),
   });
 
   const reset = useMutation({
     mutationFn: (id: number) => resetCreator(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["creators"] }),
+    onMutate: (id) => removeCreatorFromCache(id),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["creators"] }),
   });
 
   const stop = useMutation({
     mutationFn: (id: number) => stopCreator(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["creators"] }),
+    onMutate: (id) => patchCreator(id, { status: "idle" }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["creators"] }),
+  });
+
+  const restart = useMutation({
+    mutationFn: (id: number) => restartCreator(id),
+    onMutate: (id) =>
+      patchCreator(id, {
+        status: "discovering",
+        error_message: undefined,
+        total_comments: 0,
+        total_posts_scraped: 0,
+        positive_pct: 0,
+        negative_pct: 0,
+        neutral_pct: 0,
+        audience_mood: undefined,
+      }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["creators"] }),
   });
 
   return (
@@ -201,11 +232,22 @@ export default function Creators() {
                       <Square size={15} />
                     </button>
                   ) : (
-                    <button onClick={() => refresh.mutate(c.id)}
-                      className="p-2 text-gray-500 hover:text-brand-400 transition-colors rounded-lg hover:bg-brand-500/10"
-                      title="Re-run pipeline">
-                      <RefreshCw size={15} />
-                    </button>
+                    <>
+                      <button onClick={() => refresh.mutate(c.id)}
+                        className="p-2 text-gray-500 hover:text-brand-400 transition-colors rounded-lg hover:bg-brand-500/10"
+                        title="Re-run pipeline (skip already scraped)">
+                        <RefreshCw size={15} />
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (confirm(`Restart @${c.username} from scratch? This will delete all comments and re-scrape every post.`))
+                            restart.mutate(c.id);
+                        }}
+                        className="p-2 text-gray-500 hover:text-orange-400 transition-colors rounded-lg hover:bg-orange-500/10"
+                        title="Restart from scratch (wipe and re-scrape all)">
+                        <RotateCcw size={15} />
+                      </button>
+                    </>
                   )}
                   <button
                     onClick={() => {

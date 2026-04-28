@@ -39,6 +39,12 @@ async def pipeline_status(db: AsyncSession = Depends(get_db)):
         for p in posts:
             etl_breakdown[p.etl_status] = etl_breakdown.get(p.etl_status, 0) + 1
 
+        live_comments = await db.scalar(
+            select(func.count(Comment.id))
+            .join(Post, Comment.post_id == Post.id)
+            .where(Post.creator_id == c.id)
+        ) or 0
+
         creator_list.append({
             "id": c.id,
             "username": c.username,
@@ -46,7 +52,7 @@ async def pipeline_status(db: AsyncSession = Depends(get_db)):
             "status": c.status,
             "error": c.error_message,
             "total_posts": len(posts),
-            "total_comments": c.total_comments,
+            "total_comments": live_comments,
             "etl_breakdown": etl_breakdown,
             "last_run": c.last_pipeline_at.isoformat() if c.last_pipeline_at else None,
             "task_id": c.pipeline_task_id,

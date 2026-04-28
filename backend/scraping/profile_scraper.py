@@ -24,6 +24,22 @@ def _normalize(username: str) -> str:
     return username.lstrip("@").strip()
 
 
+def _parse_tiktok_cookies(raw: str) -> list:
+    """Parse a raw browser cookie string into Playwright cookie dicts."""
+    cookies = []
+    for part in raw.split(";"):
+        part = part.strip()
+        if "=" in part:
+            name, _, value = part.partition("=")
+            cookies.append({
+                "name": name.strip(),
+                "value": value.strip(),
+                "domain": ".tiktok.com",
+                "path": "/",
+            })
+    return cookies
+
+
 # ── Instagram — intercept the GraphQL query Instagram web actually uses ────────
 
 async def discover_instagram(username_or_url: str, session_id: str = "") -> Dict:
@@ -111,6 +127,7 @@ async def discover_instagram(username_or_url: str, session_id: str = "") -> Dict
 # ── TikTok ────────────────────────────────────────────────────────────────────
 
 async def discover_tiktok(username_or_url: str) -> List[Dict]:
+    from app.config import settings
     username = _normalize(username_or_url.rstrip("/").split("/")[-1])
     profile_url = f"https://www.tiktok.com/@{username}"
     posts: List[Dict] = []
@@ -131,27 +148,42 @@ async def discover_tiktok(username_or_url: str) -> List[Dict]:
             timezone_id="America/New_York",
         )
         await ctx.add_init_script(_STEALTH_SCRIPT)
+        if settings.TIKTOK_COOKIES:
+            await ctx.add_cookies(_parse_tiktok_cookies(settings.TIKTOK_COOKIES))
+            logger.info("TikTok: injected %d cookies", len(_parse_tiktok_cookies(settings.TIKTOK_COOKIES)))
+        else:
+            logger.warning("TikTok: TIKTOK_COOKIES not set — running without session")
         page = await ctx.new_page()
 
         async def intercept(response):
-            if "/api/post/item_list/" in response.url or "/api/user/post" in response.url:
+            url = response.url
+            # Log every tiktok.com API call so we can see what's happening
+            if "tiktok.com/api" in url:
+                logger.info("TikTok API response: %d %s", response.status, url[:120])
+            if "/api/post/item_list/" in url or "/api/user/post" in url:
                 try:
                     body = await response.json()
-                    for item in body.get("itemList", []):
+                    items = body.get("itemList", [])
+                    logger.info("TikTok item_list: %d items, hasMore=%s", len(items), body.get("hasMore"))
+                    for item in items:
                         aweme_id = item.get("id") or item.get("aweme_id")
                         if aweme_id and not any(p["external_id"] == str(aweme_id) for p in posts):
                             posts.append({
                                 "url": f"https://www.tiktok.com/@{username}/video/{aweme_id}",
                                 "external_id": str(aweme_id),
                             })
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("TikTok: failed to parse item_list response: %s", exc)
 
         page.on("response", intercept)
         try:
             await page.goto(profile_url, wait_until="domcontentloaded", timeout=30_000)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("TikTok: page.goto error: %s", exc)
+
+        page_title = await page.title()
+        logger.info("TikTok: page loaded — title: %r", page_title)
+
         await asyncio.sleep(5)
         for _ in range(10):
             await page.mouse.wheel(0, 3000)

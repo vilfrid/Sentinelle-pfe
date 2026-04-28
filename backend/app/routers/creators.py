@@ -89,6 +89,47 @@ async def refresh_creator(creator_id: int, db: AsyncSession = Depends(get_db)):
     return creator
 
 
+@router.post("/{creator_id}/restart", response_model=CreatorOut)
+async def restart_creator_pipeline(creator_id: int, db: AsyncSession = Depends(get_db)):
+    """Wipe all comments and posts for this creator, then re-run the full pipeline from scratch."""
+    creator = await db.get(Creator, creator_id)
+    if not creator:
+        raise HTTPException(404, "Creator not found")
+
+    from workers.tasks import launch_creator_pipeline, set_stop_flag, clear_logs
+
+    set_stop_flag(creator_id)
+
+    posts = (await db.scalars(select(Post).where(Post.creator_id == creator_id))).all()
+    post_ids = [p.id for p in posts]
+    if post_ids:
+        await db.execute(delete(Comment).where(Comment.post_id.in_(post_ids)))
+        await db.execute(
+            Post.__table__.update()
+            .where(Post.creator_id == creator_id)
+            .values(etl_status="pending", raw_data_path=None)
+        )
+
+    creator.total_comments = 0
+    creator.total_posts_scraped = 0
+    creator.positive_pct = 0
+    creator.negative_pct = 0
+    creator.neutral_pct = 0
+    creator.avg_sentiment_score = 0
+    creator.audience_mood = None
+    creator.top_topics = None
+    creator.error_message = None
+    await db.commit()
+
+    clear_logs(creator_id)
+    task = launch_creator_pipeline.delay(creator_id)
+    creator.pipeline_task_id = task.id
+    creator.status = "discovering"
+    await db.commit()
+    await db.refresh(creator)
+    return creator
+
+
 @router.post("/{creator_id}/stop", status_code=204)
 async def stop_creator_pipeline(creator_id: int, db: AsyncSession = Depends(get_db)):
     """Signal running pipeline tasks to abort."""

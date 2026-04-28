@@ -2,7 +2,7 @@
 Transforms Tunisian Arabizi (Franco-Arab) text to Arabic script using Gemma 3 27B.
 Refactored from test/tra.py — now class-based with configurable settings.
 """
-import asyncio
+import json
 import logging
 import re
 import time
@@ -23,18 +23,18 @@ _RATE_DELAY = 2.5
 
 _PROMPT_TEMPLATE = """You are an expert in Tunisian dialect (Darija) and Arabizi transliteration.
 
-Process each line according to these rules:
-1. If the line is purely French, English, Italian, or another foreign language (no Arabizi/Darija) → output exactly: {ignore}
-2. If the line is Tunisian Arabizi (uses 3, 7, 9, 5 as Arabic letters, Franco-Arab mix) → transmute it to Arabic script
+Process each text in the input array according to these rules:
+1. If the text is purely French, English, Italian, or another non-Arabic/non-Darija language → return exactly the string: {ignore}
+2. If the text is Tunisian Arabizi (Franco-Arab mix, uses 3/7/9/5 as Arabic letters) → convert it to Arabic script
    - Keep French/English loanwords phonetically in Arabic (e.g. "Bravo" → "برافو")
    - Preserve emojis
-3. If the line is already Arabic → return it as-is
+3. If the text is already Arabic script → return it as-is
 
-Input lines:
+Input JSON array:
 {lines}
 
-Output each result on its own line prefixed with LINE_X: (where X is the 1-based line number).
-Do not add any other commentary."""
+Reply with ONLY a valid JSON array of strings, one output per input, in the same order.
+No explanation, no markdown, no code block — just the raw JSON array."""
 
 
 class ArabiziTransformer:
@@ -43,16 +43,27 @@ class ArabiziTransformer:
         self.model = genai.GenerativeModel("gemma-3-27b-it")
 
     def _build_prompt(self, lines: List[str]) -> str:
-        formatted = "\n".join(f"LINE_{i+1}: {line}" for i, line in enumerate(lines))
-        return _PROMPT_TEMPLATE.format(ignore=_IGNORE, lines=formatted)
+        return _PROMPT_TEMPLATE.format(
+            ignore=_IGNORE,
+            lines=json.dumps(lines, ensure_ascii=False),
+        )
 
     def _parse_response(self, text: str, count: int) -> List[str]:
-        results = [""] * count
-        for match in re.finditer(r"LINE_(\d+):\s*(.*)", text):
-            idx = int(match.group(1)) - 1
-            if 0 <= idx < count:
-                results[idx] = match.group(2).strip()
-        return results
+        # Strip markdown code fences if present
+        clean = re.sub(r"```(?:json)?\s*|\s*```", "", text).strip()
+        try:
+            parsed = json.loads(clean)
+            if isinstance(parsed, list) and len(parsed) == count:
+                return [str(r).strip() for r in parsed]
+            logger.warning("JSON response length mismatch: got %d, expected %d", len(parsed), count)
+            # Pad or truncate to match count
+            result = [str(r).strip() for r in parsed]
+            while len(result) < count:
+                result.append("")
+            return result[:count]
+        except json.JSONDecodeError:
+            logger.warning("JSON parse failed. Raw response snippet: %r", text[:300])
+            return [""] * count
 
     def transform_batch(self, lines: List[str]) -> List[str]:
         results = []
@@ -68,11 +79,17 @@ class ArabiziTransformer:
         for attempt in range(_RETRY_ATTEMPTS):
             try:
                 response = self.model.generate_content(prompt)
-                return self._parse_response(response.text, len(batch))
+                parsed = self._parse_response(response.text, len(batch))
+                filled = sum(1 for r in parsed if r)
+                logger.info("Arabizi batch: %d/%d lines parsed successfully", filled, len(batch))
+                return parsed
             except (ResourceExhausted, ServiceUnavailable, InternalServerError) as e:
                 logger.warning("API error (attempt %d/%d): %s", attempt + 1, _RETRY_ATTEMPTS, e)
                 if attempt < _RETRY_ATTEMPTS - 1:
-                    time.sleep(_RETRY_DELAY * (attempt + 1))
+                    delay_match = re.search(r"retry[_ ](?:after|in)[_ ](\d+(?:\.\d+)?)", str(e), re.IGNORECASE)
+                    wait = float(delay_match.group(1)) + 5 if delay_match else _RETRY_DELAY * (attempt + 1) * 4
+                    logger.info("Waiting %.0fs before retry…", wait)
+                    time.sleep(wait)
             except Exception as e:
                 logger.error("Unexpected error in transformer: %s", e)
                 break

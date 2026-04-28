@@ -16,6 +16,7 @@ aiofiles==23.2.1
 
 # Scraping
 playwright==1.44.0
+yt-dlp>=2025.1.15
 
 # AI / NLP
 google-generativeai==0.7.2

@@ -41,7 +41,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    command: celery -A workers.celery_app worker --loglevel=info --concurrency=2
+    command: celery -A workers.celery_app worker --loglevel=info --concurrency=4
 
   frontend:
     build:

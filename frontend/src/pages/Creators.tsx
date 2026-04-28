@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { getCreators, addCreator, deleteCreator, refreshCreator, getCampaigns } from "../services/api";
-import { Plus, RefreshCw, Trash2, ChevronRight, Loader, CheckCircle, AlertCircle, Search } from "lucide-react";
+import { getCreators, addCreator, deleteCreator, refreshCreator, resetCreator, stopCreator, getCampaigns } from "../services/api";
+import { Plus, RefreshCw, Trash2, ChevronRight, Loader, CheckCircle, AlertCircle, Search, Square } from "lucide-react";
 import { clsx } from "clsx";
 
 const PLATFORMS = ["instagram", "tiktok", "youtube"];
@@ -72,6 +72,16 @@ export default function Creators() {
 
   const refresh = useMutation({
     mutationFn: (id: number) => refreshCreator(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["creators"] }),
+  });
+
+  const reset = useMutation({
+    mutationFn: (id: number) => resetCreator(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["creators"] }),
+  });
+
+  const stop = useMutation({
+    mutationFn: (id: number) => stopCreator(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["creators"] }),
   });
 
@@ -184,13 +194,26 @@ export default function Creators() {
 
                 {/* Actions */}
                 <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-                  <button onClick={() => refresh.mutate(c.id)}
-                    className="p-2 text-gray-500 hover:text-brand-400 transition-colors rounded-lg hover:bg-brand-500/10"
-                    title="Re-run pipeline">
-                    <RefreshCw size={15} className={refresh.isPending ? "animate-spin" : ""} />
-                  </button>
-                  <button onClick={() => remove.mutate(c.id)}
-                    className="p-2 text-gray-500 hover:text-red-400 transition-colors rounded-lg hover:bg-red-500/10">
+                  {["discovering", "scraping", "processing"].includes(c.status) ? (
+                    <button onClick={() => stop.mutate(c.id)}
+                      className="p-2 text-yellow-500 hover:text-yellow-300 transition-colors rounded-lg hover:bg-yellow-500/10"
+                      title="Stop pipeline">
+                      <Square size={15} />
+                    </button>
+                  ) : (
+                    <button onClick={() => refresh.mutate(c.id)}
+                      className="p-2 text-gray-500 hover:text-brand-400 transition-colors rounded-lg hover:bg-brand-500/10"
+                      title="Re-run pipeline">
+                      <RefreshCw size={15} />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      if (confirm(`Delete @${c.username}? This will stop the pipeline and permanently delete all posts, comments, and raw files.`))
+                        reset.mutate(c.id);
+                    }}
+                    className="p-2 text-gray-500 hover:text-red-400 transition-colors rounded-lg hover:bg-red-500/10"
+                    title="Delete creator and all data">
                     <Trash2 size={15} />
                   </button>
                   <ChevronRight size={16} className="text-gray-600 group-hover:text-gray-400 transition-colors ml-1" />

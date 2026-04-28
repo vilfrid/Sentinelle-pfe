@@ -1,8 +1,8 @@
 """
 Client for the Sentinelle AI sentiment engine.
 The AI engine is a separate service connected via REST API.
-When the engine is not reachable, falls back to a rule-based heuristic.
 """
+import asyncio
 import logging
 from typing import List, Optional
 import httpx
@@ -10,7 +10,9 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT = 10.0
+_TIMEOUT = 300.0   # AI engine needs up to 5 min for large batches
+_BATCH_SIZE = 50
+_RETRY_DELAY = 5   # seconds before retrying a failed batch
 
 
 class SentimentResult:
@@ -26,17 +28,23 @@ class SentimentClient:
         self.base_url = settings.AI_ENGINE_URL
         self.api_key = settings.AI_ENGINE_API_KEY
 
-    async def analyze(self, texts: List[str]) -> List[Optional[SentimentResult]]:
-        """Send texts to the AI engine. Falls back to heuristic if unavailable."""
-        try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async def _send_batch(
+        self, client: httpx.AsyncClient, texts: List[str], batch_num: int, total_batches: int
+    ) -> List[Optional["SentimentResult"]]:
+        """Send one batch with one retry on failure. Returns None per entry on permanent failure."""
+        for attempt in range(2):
+            try:
                 resp = await client.post(
                     f"{self.base_url}/analyze",
                     json={"texts": texts},
-                    headers={"X-API-Key": self.api_key},
+                    headers={"Authorization": f"Bearer {self.api_key}"},
                 )
                 resp.raise_for_status()
                 results = resp.json()["results"]
+                logger.info(
+                    "Sentiment batch %d/%d: %d results received",
+                    batch_num, total_batches, len(results),
+                )
                 return [
                     SentimentResult(
                         label=r["label"],
@@ -46,19 +54,42 @@ class SentimentClient:
                     )
                     for r in results
                 ]
-        except Exception as e:
-            logger.warning("AI engine unavailable (%s), using heuristic fallback", e)
-            return [self._heuristic(t) for t in texts]
+            except Exception as e:
+                if attempt == 0:
+                    logger.warning(
+                        "Sentiment batch %d/%d failed (attempt 1), retrying in %ds: %s",
+                        batch_num, total_batches, _RETRY_DELAY, e,
+                    )
+                    await asyncio.sleep(_RETRY_DELAY)
+                else:
+                    logger.error(
+                        "Sentiment batch %d/%d failed after retry — %d comments left unanalyzed: %s",
+                        batch_num, total_batches, len(texts), e,
+                    )
+                    return [None] * len(texts)
 
-    def _heuristic(self, text: str) -> SentimentResult:
-        """Simple keyword-based fallback for when AI engine is offline."""
-        pos_words = {"برافو", "مزيان", "شكرا", "نحب", "جميل", "رائع", "ممتاز", "good", "great", "love", "👍", "❤️", "😍"}
-        neg_words = {"قبيح", "ماعجبنيش", "خايب", "سيء", "horrible", "bad", "hate", "👎", "😡", "🤮"}
-        lower = text.lower()
-        pos = sum(1 for w in pos_words if w in lower)
-        neg = sum(1 for w in neg_words if w in lower)
-        if pos > neg:
-            return SentimentResult("positive", 0.5, 0.4, {"joy": 0.6})
-        elif neg > pos:
-            return SentimentResult("negative", -0.5, 0.4, {"anger": 0.6})
-        return SentimentResult("neutral", 0.0, 0.5, {})
+    async def analyze(self, texts: List[str]) -> List[Optional[SentimentResult]]:
+        """
+        Split texts into batches of 50, send each to the AI engine in order,
+        and merge results back. Blocks until ALL batches are complete.
+        Returns None for each entry in any batch that fails after one retry.
+        """
+        batches = [texts[i:i + _BATCH_SIZE] for i in range(0, len(texts), _BATCH_SIZE)]
+        total_batches = len(batches)
+        logger.info(
+            "Starting sentiment analysis: %d texts in %d batch(es) of up to %d",
+            len(texts), total_batches, _BATCH_SIZE,
+        )
+
+        all_results: List[Optional[SentimentResult]] = []
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            for idx, batch in enumerate(batches, start=1):
+                batch_results = await self._send_batch(client, batch, idx, total_batches)
+                all_results.extend(batch_results)
+
+        analyzed = sum(1 for r in all_results if r is not None)
+        logger.info(
+            "Sentiment analysis complete: %d/%d comments analyzed successfully",
+            analyzed, len(texts),
+        )
+        return all_results

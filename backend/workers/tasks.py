@@ -13,6 +13,8 @@ Full automated pipeline:
 import asyncio
 import json
 import logging
+import random
+import time
 from datetime import datetime, timezone
 
 import redis as redis_lib
@@ -47,6 +49,23 @@ def _log(creator_id: int, step: str, status: str, msg: str):
 
 def clear_logs(creator_id: int):
     _redis.delete(_LOG_KEY.format(creator_id))
+
+
+# ── Stop flag ─────────────────────────────────────────────────────────────────
+
+_STOP_KEY = "pipeline:stop:{}"
+
+
+def set_stop_flag(creator_id: int):
+    _redis.setex(_STOP_KEY.format(creator_id), 3600, "1")
+
+
+def clear_stop_flag(creator_id: int):
+    _redis.delete(_STOP_KEY.format(creator_id))
+
+
+def _is_stopped(creator_id: int) -> bool:
+    return _redis.exists(_STOP_KEY.format(creator_id)) > 0
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -104,6 +123,7 @@ def _update_post_status(post_id: int, status: str, raw_data_path: str = None):
 @celery_app.task(bind=True, name="workers.tasks.launch_creator_pipeline")
 def launch_creator_pipeline(self, creator_id: int):
     clear_logs(creator_id)
+    clear_stop_flag(creator_id)
     _log(creator_id, "init", "info", "Pipeline started")
 
     info = _get_creator(creator_id)
@@ -164,8 +184,7 @@ def launch_creator_pipeline(self, creator_id: int):
         scrape_and_process_post.s(p["url"], p["external_id"], info["platform"], creator_id)
         for p in posts
     )
-    workflow = chord(post_tasks)(finalize_creator.s(creator_id))
-    workflow.apply_async()
+    chord(post_tasks)(finalize_creator.s(creator_id))
 
     return {"discovered": len(posts)}
 
@@ -174,6 +193,14 @@ def launch_creator_pipeline(self, creator_id: int):
 
 @celery_app.task(bind=True, name="workers.tasks.scrape_and_process_post")
 def scrape_and_process_post(self, url: str, external_id: str, platform: str, creator_id: int):
+    if _is_stopped(creator_id):
+        return {"skipped": True, "reason": "stopped"}
+
+    # Stagger parallel Instagram requests so the same session isn't hit simultaneously.
+    # Without this, Instagram rate-limits and returns next_max_id=null after page 1.
+    if platform == "instagram":
+        time.sleep(random.uniform(1, 10))
+
     from app.models.post import Post
     from app.models.platform import Platform
     from app.models.creator import Creator
@@ -195,21 +222,27 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
 
         existing = db.query(Post).filter(Post.external_id == external_id).first()
         if existing:
-            _log(creator_id, "scrape", "info", f"Skipped (already scraped): {short_url}")
-            return {"post_id": existing.id, "skipped": True}
-
-        post = Post(
-            platform_id=platform_obj.id,
-            campaign_id=campaign_id,
-            creator_id=creator_id,
-            external_id=external_id,
-            url=url,
-            etl_status="pending",
-        )
-        db.add(post)
-        db.commit()
-        db.refresh(post)
-        post_id = post.id
+            if existing.etl_status in ("transformed", "analyzed"):
+                _log(creator_id, "scrape", "info", f"Skipped (already processed): {short_url}")
+                return {"post_id": existing.id, "skipped": True}
+            # exists but not yet processed (e.g. stale pending from a cancelled run) — re-process it
+            _log(creator_id, "scrape", "info", f"Re-processing unfinished post: {short_url}")
+            post_id = existing.id
+            existing.etl_status = "pending"
+            db.commit()
+        else:
+            post = Post(
+                platform_id=platform_obj.id,
+                campaign_id=campaign_id,
+                creator_id=creator_id,
+                external_id=external_id,
+                url=url,
+                etl_status="pending",
+            )
+            db.add(post)
+            db.commit()
+            db.refresh(post)
+            post_id = post.id
     finally:
         db.close()
 
@@ -232,6 +265,12 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
         return {"post_id": post_id, "error": str(exc)}
 
     _update_post_status(post_id, "scraped", raw_data_path=str(jsonl_path))
+
+    if not jsonl_path.exists() or jsonl_path.stat().st_size == 0:
+        _log(creator_id, "etl", "warn",
+             f"0 comments captured for {short_url} — JSONL empty (bot detection, no comments, or session issue)")
+        _update_post_status(post_id, "etl_failed")
+        return {"post_id": post_id, "comments": 0}
 
     # ── ETL clean ──
     _log(creator_id, "etl", "info", f"Running ETL cleaner ({platform})...")
@@ -305,7 +344,7 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
 
     # ── Sentiment ──
     _log(creator_id, "sentiment", "info",
-         f"Sending to AI engine ({settings.AI_ENGINE_URL}) — fallback to heuristic if unreachable...")
+         f"Sending to AI engine ({settings.AI_ENGINE_URL}) in batches of 50...")
     try:
         from app.models.comment import Comment
         from analytics.sentiment_client import SentimentClient

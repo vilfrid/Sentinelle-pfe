@@ -1,4 +1,4 @@
-"""Extracts comment text from YouTube JSONL files (/youtubei/v1/next)."""
+"""Extracts comment text from YouTube JSONL files (yt-dlp format)."""
 import json
 import logging
 from pathlib import Path
@@ -17,28 +17,16 @@ class YouTubeCleaner:
                     continue
                 try:
                     record = json.loads(line)
+                    # _append_record wraps data under "data" key
                     data = record.get("data", record)
-                    mutations = (
-                        data.get("frameworkUpdates", {})
-                        .get("entityBatchUpdate", {})
-                        .get("mutations", [])
-                    )
-                    for mut in mutations:
-                        payload = mut.get("payload", {}).get("commentEntityPayload")
-                        if not payload:
-                            continue
-                        content = (
-                            payload.get("properties", {})
-                            .get("content", {})
-                            .get("content", "")
-                        )
-                        if content:
-                            comments.append({
-                                "external_id": payload.get("properties", {}).get("commentId", ""),
-                                "author": payload.get("author", {}).get("displayName", ""),
-                                "raw_text": content.replace("\n", " ").strip(),
-                                "likes": payload.get("toolbar", {}).get("likeCountLiked", 0),
-                            })
+                    text = data.get("text", "").replace("\n", " ").strip()
+                    if text:
+                        comments.append({
+                            "external_id": data.get("id", ""),
+                            "author": data.get("author", ""),
+                            "raw_text": text,
+                            "likes": data.get("like_count", 0) or 0,
+                        })
                 except (json.JSONDecodeError, AttributeError, TypeError) as e:
                     logger.debug("YouTube line %d skip: %s", i, e)
         return comments

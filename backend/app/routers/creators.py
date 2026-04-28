@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from typing import List
 from urllib.parse import urlparse
+from pathlib import Path
 
 from app.database import get_db
 from app.models.creator import Creator
@@ -86,6 +87,51 @@ async def refresh_creator(creator_id: int, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(creator)
     return creator
+
+
+@router.post("/{creator_id}/stop", status_code=204)
+async def stop_creator_pipeline(creator_id: int, db: AsyncSession = Depends(get_db)):
+    """Signal running pipeline tasks to abort."""
+    creator = await db.get(Creator, creator_id)
+    if not creator:
+        raise HTTPException(404, "Creator not found")
+    from workers.tasks import set_stop_flag, _log
+    set_stop_flag(creator_id)
+    _log(creator_id, "init", "warn", "Pipeline stopped by user")
+    creator.status = "idle"
+    creator.error_message = None
+    await db.commit()
+
+
+@router.post("/{creator_id}/reset", status_code=204)
+async def reset_creator(creator_id: int, db: AsyncSession = Depends(get_db)):
+    """Stop pipeline, delete all data, and delete the creator."""
+    creator = await db.get(Creator, creator_id)
+    if not creator:
+        raise HTTPException(404, "Creator not found")
+
+    from workers.tasks import set_stop_flag, clear_logs
+    set_stop_flag(creator_id)
+
+    posts = (await db.scalars(
+        select(Post).where(Post.creator_id == creator_id)
+    )).all()
+
+    post_ids = [p.id for p in posts]
+    if post_ids:
+        await db.execute(delete(Comment).where(Comment.post_id.in_(post_ids)))
+
+    for post in posts:
+        if post.raw_data_path:
+            try:
+                Path(post.raw_data_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    await db.execute(delete(Post).where(Post.creator_id == creator_id))
+    clear_logs(creator_id)
+    await db.delete(creator)
+    await db.commit()
 
 
 @router.delete("/{creator_id}", status_code=204)

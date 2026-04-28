@@ -18,6 +18,8 @@ export const getCreator        = (id: number) => api.get(`/creators/${id}`).then
 export const addCreator        = (data: object) => api.post("/creators/", data).then((r) => r.data);
 export const deleteCreator     = (id: number) => api.delete(`/creators/${id}`);
 export const refreshCreator    = (id: number) => api.post(`/creators/${id}/refresh`).then((r) => r.data);
+export const resetCreator      = (id: number) => api.post(`/creators/${id}/reset`);
+export const stopCreator       = (id: number) => api.post(`/creators/${id}/stop`);
 export const getCreatorPosts   = (id: number) => api.get(`/creators/${id}/posts`).then((r) => r.data);
 export const getCreatorComments = (id: number, sentiment?: string) =>
   api.get(`/creators/${id}/comments`, { params: sentiment ? { sentiment } : {} }).then((r) => r.data);

@@ -1,9 +1,8 @@
 """
 TikTok comment scraper using Playwright.
-Intercepts /api/comment/list/ endpoint.
+Intercepts /api/comment/list/ endpoint with stealth to bypass bot detection.
 """
 import asyncio
-import json
 import logging
 import re
 from pathlib import Path
@@ -15,6 +14,12 @@ logger = logging.getLogger(__name__)
 
 _COMMENT_API = "/api/comment/list/"
 _VIDEO_RE = re.compile(r"/video/(\d+)")
+
+_STEALTH_SCRIPT = """
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    window.chrome = { runtime: {} };
+"""
 
 
 class TikTokScraper(BaseScraper):
@@ -29,9 +34,19 @@ class TikTokScraper(BaseScraper):
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
-                args=["--disable-blink-features=AutomationControlled"],
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
             )
-            ctx = await browser.new_context()
+            ctx = await browser.new_context(
+                viewport={"width": 1280, "height": 900},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                locale="en-US",
+                timezone_id="America/New_York",
+            )
+            await ctx.add_init_script(_STEALTH_SCRIPT)
             page = await ctx.new_page()
 
             async def intercept(response):
@@ -45,11 +60,15 @@ class TikTokScraper(BaseScraper):
                         pass
 
             page.on("response", intercept)
-            await page.goto(url, wait_until="networkidle", timeout=30_000)
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            except Exception:
+                pass
+            await asyncio.sleep(5)
 
-            for _ in range(8):
+            for _ in range(12):
                 await page.mouse.wheel(0, 3000)
-                await asyncio.sleep(1.8)
+                await asyncio.sleep(2)
 
             await browser.close()
 

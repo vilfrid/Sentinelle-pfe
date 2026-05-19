@@ -161,10 +161,34 @@ def launch_creator_pipeline(self, creator_id: int):
         )
         posts = result if isinstance(result, list) else result.get("posts", [])
         page_title = result.get("page_title", "") if isinstance(result, dict) else ""
+        creator_info = result.get("creator_info", {}) if isinstance(result, dict) else {}
         if page_title:
             _log(creator_id, "discover", "info", f"Browser saw page: \"{page_title}\"")
         _log(creator_id, "discover", "ok" if posts else "warn",
              f"Discovery complete: found {len(posts)} post(s)")
+
+        # Update Creator with profile data discovered during scraping
+        if creator_info:
+            from app.models.creator import Creator as CreatorModel
+            db = get_sync_db()
+            try:
+                creator_obj = db.get(CreatorModel, creator_id)
+                if creator_obj:
+                    if creator_info.get("follower_count"):
+                        creator_obj.follower_count = int(creator_info["follower_count"])
+                    if creator_info.get("bio") and not creator_obj.bio:
+                        creator_obj.bio = creator_info["bio"]
+                    if creator_info.get("display_name") and not creator_obj.display_name:
+                        creator_obj.display_name = creator_info["display_name"]
+                    if creator_info.get("avatar_url") and not creator_obj.avatar_url:
+                        creator_obj.avatar_url = creator_info["avatar_url"]
+                    db.commit()
+                    _log(creator_id, "discover", "ok",
+                         f"Profile synced: {creator_info.get('follower_count', '?')} followers")
+            except Exception as exc:
+                _log(creator_id, "discover", "warn", f"Profile sync failed (non-fatal): {exc}")
+            finally:
+                db.close()
 
     except Exception as exc:
         _log(creator_id, "discover", "error", f"Discovery crashed: {exc}")
@@ -323,10 +347,11 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
         _update_post_status(post_id, "etl_failed")
         return {"post_id": post_id, "error": "0 comments extracted"}
 
-    # ── Store comments (no Arabizi transform — direct storage) ──
+    # ── Store comments ──
     _log(creator_id, "etl", "info", "Saving comments to DB...")
     try:
         from app.models.comment import Comment
+        from app.models.post import Post as PostModel
         db = get_sync_db()
         try:
             stored = 0
@@ -345,9 +370,50 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
                     arabized_text=None,
                     language="raw",
                     likes=raw.get("likes", 0),
+                    posted_at=raw.get("posted_at"),
                 )
                 db.add(c)
                 stored += 1
+
+            # For YouTube: read the meta record from JSONL to update post stats
+            if platform == "youtube":
+                try:
+                    from etl.cleaners.youtube_cleaner import YouTubeCleaner
+                    yt_meta = YouTubeCleaner().extract_post_metadata(jsonl_path)
+                    if yt_meta:
+                        post_obj = db.get(PostModel, post_id)
+                        if post_obj:
+                            if yt_meta.get("view_count"):
+                                post_obj.views = yt_meta["view_count"]
+                            if yt_meta.get("like_count"):
+                                post_obj.likes = yt_meta["like_count"]
+                            if yt_meta.get("comment_count"):
+                                post_obj.comment_count = yt_meta["comment_count"]
+                            if yt_meta.get("description"):
+                                post_obj.caption = yt_meta["description"][:500]
+                            if yt_meta.get("upload_date"):
+                                try:
+                                    post_obj.posted_at = datetime.strptime(
+                                        yt_meta["upload_date"], "%Y%m%d"
+                                    ).replace(tzinfo=timezone.utc)
+                                except ValueError:
+                                    pass
+                        # Update Creator with channel stats
+                        from app.models.creator import Creator as CreatorModel
+                        creator_obj = db.get(CreatorModel, creator_id)
+                        if creator_obj and yt_meta.get("channel_follower_count"):
+                            creator_obj.follower_count = yt_meta["channel_follower_count"]
+                            if yt_meta.get("channel") and not creator_obj.display_name:
+                                creator_obj.display_name = yt_meta["channel"]
+                            if yt_meta.get("thumbnail") and not creator_obj.avatar_url:
+                                creator_obj.avatar_url = yt_meta["thumbnail"]
+                        _log(creator_id, "etl", "info",
+                             f"YouTube meta: views={yt_meta.get('view_count')} "
+                             f"likes={yt_meta.get('like_count')} "
+                             f"subs={yt_meta.get('channel_follower_count')}")
+                except Exception as exc:
+                    _log(creator_id, "etl", "warn", f"YouTube meta update failed (non-fatal): {exc}")
+
             db.commit()
             _log(creator_id, "etl", "ok", f"Stored {stored} new comment(s) in DB")
         finally:

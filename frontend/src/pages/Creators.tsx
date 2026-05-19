@@ -12,7 +12,21 @@ type Creator = {
   status: string; total_posts_scraped: number; total_comments: number;
   positive_pct: number; negative_pct: number; neutral_pct: number;
   audience_mood?: string; last_pipeline_at?: string; error_message?: string;
-  campaign_id?: number;
+  campaign_id?: number; follower_count: number; avatar_url?: string; bio?: string;
+};
+
+const fmt = (n: number) => {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return n > 0 ? n.toString() : null;
+};
+
+const tier = (n: number) => {
+  if (n >= 1_000_000) return { label: "Mega",  cls: "text-yellow-400 bg-yellow-500/10 border-yellow-500/20" };
+  if (n >= 100_000)   return { label: "Macro", cls: "text-purple-400 bg-purple-500/10 border-purple-500/20" };
+  if (n >= 10_000)    return { label: "Micro", cls: "text-blue-400 bg-blue-500/10 border-blue-500/20" };
+  if (n > 0)          return { label: "Nano",  cls: "text-green-400 bg-green-500/10 border-green-500/20" };
+  return null;
 };
 
 const StatusBadge = ({ status }: { status: string }) => {
@@ -193,17 +207,29 @@ export default function Creators() {
             <div key={c.id} className="card hover:border-white/10 transition-colors cursor-pointer group"
               onClick={() => navigate(`/creators/${c.id}`)}>
               <div className="flex items-center gap-4">
-                {/* Avatar placeholder */}
-                <div className="w-11 h-11 rounded-full bg-brand-600/20 flex items-center justify-center text-brand-400 font-bold text-lg shrink-0">
-                  {c.username[0]?.toUpperCase()}
-                </div>
+                {/* Avatar */}
+                {c.avatar_url ? (
+                  <img src={c.avatar_url} alt={c.username}
+                    className="w-11 h-11 rounded-full object-cover shrink-0 border border-white/10" />
+                ) : (
+                  <div className="w-11 h-11 rounded-full bg-brand-600/20 flex items-center justify-center text-brand-400 font-bold text-lg shrink-0">
+                    {c.username[0]?.toUpperCase()}
+                  </div>
+                )}
 
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-semibold">@{c.username}</span>
+                    {c.display_name && <span className="text-xs text-gray-500">{c.display_name}</span>}
                     <StatusBadge status={c.status} />
+                    {(() => { const t = tier(c.follower_count); return t ? (
+                      <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${t.cls}`}>{t.label}</span>
+                    ) : null; })()}
+                    {fmt(c.follower_count) && (
+                      <span className="text-xs text-gray-400">{fmt(c.follower_count)} followers</span>
+                    )}
                     {c.audience_mood && (
-                      <span className="text-xs text-gray-400 capitalize">{c.audience_mood} mood</span>
+                      <span className="text-xs text-gray-500 capitalize">{c.audience_mood} mood</span>
                     )}
                     {!c.campaign_id && (
                       <span className="text-xs bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded-full">Global Pool</span>

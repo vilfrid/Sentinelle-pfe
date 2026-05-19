@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getCampaigns, getMetrics, computeMetrics, getSentimentTimeline, getTopics } from "../services/api";
+import { getCampaigns, getMetrics, computeMetrics, getCommentTimeline, getTopics } from "../services/api";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { format } from "date-fns";
 
@@ -16,8 +16,8 @@ export default function Analytics() {
     enabled: !!campaignId,
   });
   const { data: timeline = [] } = useQuery({
-    queryKey: ["timeline", campaignId],
-    queryFn: () => getSentimentTimeline(campaignId!),
+    queryKey: ["comment-timeline", campaignId],
+    queryFn: () => getCommentTimeline(campaignId!),
     enabled: !!campaignId,
   });
   const { data: topics } = useQuery({

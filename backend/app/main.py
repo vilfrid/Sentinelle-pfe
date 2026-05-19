@@ -53,7 +53,7 @@ async def debug_gemini():
         return {"ok": False, "error": "GOOGLE_API_KEY is empty — check your .env file"}
     try:
         genai.configure(api_key=key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         resp = model.generate_content("Reply with just the word: ok")
         return {"ok": True, "key_prefix": key[:8] + "...", "response": resp.text.strip()}
     except Exception as exc:

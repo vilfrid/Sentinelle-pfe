@@ -232,6 +232,7 @@ async def get_creator_posts(creator_id: int, db: AsyncSession = Depends(get_db))
 async def get_creator_comments(
     creator_id: int,
     sentiment: str = Query(None),
+    sort: str = Query("date", enum=["date", "likes"]),
     limit: int = Query(100, le=500),
     db: AsyncSession = Depends(get_db),
 ):
@@ -243,7 +244,8 @@ async def get_creator_comments(
     q = select(Comment).where(Comment.post_id.in_(post_ids))
     if sentiment:
         q = q.where(Comment.sentiment == sentiment)
-    q = q.order_by(Comment.scraped_at.desc()).limit(limit)
+    order = Comment.likes.desc() if sort == "likes" else Comment.scraped_at.desc()
+    q = q.order_by(order).limit(limit)
     comments = (await db.scalars(q)).all()
     return [
         {
@@ -254,6 +256,39 @@ async def get_creator_comments(
             "sentiment_score": c.sentiment_score,
             "language": c.language,
             "likes": c.likes,
+            "posted_at": c.posted_at.isoformat() if c.posted_at else None,
+        }
+        for c in comments
+    ]
+
+
+@router.get("/{creator_id}/top-comments")
+async def get_top_comments(
+    creator_id: int,
+    limit: int = Query(10, le=50),
+    db: AsyncSession = Depends(get_db),
+):
+    """Top comments by likes — the most impactful audience voices."""
+    post_ids = (await db.scalars(
+        select(Post.id).where(Post.creator_id == creator_id)
+    )).all()
+    if not post_ids:
+        return []
+    comments = (await db.scalars(
+        select(Comment)
+        .where(Comment.post_id.in_(post_ids), Comment.likes > 0)
+        .order_by(Comment.likes.desc())
+        .limit(limit)
+    )).all()
+    return [
+        {
+            "id": c.id,
+            "author": c.author,
+            "text": c.raw_text,
+            "likes": c.likes,
+            "sentiment": c.sentiment,
+            "sentiment_score": c.sentiment_score,
+            "posted_at": c.posted_at.isoformat() if c.posted_at else None,
         }
         for c in comments
     ]

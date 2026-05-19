@@ -70,6 +70,29 @@ class YouTubeScraper(BaseScraper):
             logger.warning("yt-dlp returned None for %s", video_id)
             return out_path
 
+        # Save video-level metadata as the first record (type=meta)
+        meta = {
+            "__type":               "meta",
+            "view_count":           info.get("view_count"),
+            "like_count":           info.get("like_count"),
+            "comment_count":        info.get("comment_count"),
+            "duration":             info.get("duration"),
+            "description":          (info.get("description") or "")[:1000],
+            "upload_date":          info.get("upload_date"),        # "YYYYMMDD"
+            "channel":              info.get("channel"),
+            "channel_id":           info.get("channel_id"),
+            "uploader_id":          info.get("uploader_id"),        # @handle
+            "channel_follower_count": info.get("channel_follower_count"),
+            "thumbnail":            info.get("thumbnail"),
+            "tags":                 (info.get("tags") or [])[:20],
+            "categories":           info.get("categories") or [],
+        }
+        self._append_record(out_path, meta, video_id)
+        logger.info(
+            "YouTube %s: views=%s likes=%s subscribers=%s",
+            video_id, meta["view_count"], meta["like_count"], meta["channel_follower_count"],
+        )
+
         comments = info.get("comments") or []
         logger.info(
             "YouTube %s: yt-dlp returned %d comment(s) ('comments' key present: %s)",

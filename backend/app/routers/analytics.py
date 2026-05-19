@@ -35,6 +35,46 @@ async def compute_metrics(
     return await engine.compute(campaign_id, period, start, now)
 
 
+@router.get("/{campaign_id}/comment-timeline")
+async def comment_timeline(campaign_id: int, db: AsyncSession = Depends(get_db)):
+    """Per-day sentiment breakdown using actual comment posted_at timestamps."""
+    from app.models.comment import Comment
+    from app.models.post import Post
+    from collections import defaultdict
+
+    posts = (await db.scalars(select(Post).where(Post.campaign_id == campaign_id))).all()
+    post_ids = [p.id for p in posts]
+    if not post_ids:
+        return []
+
+    comments = (await db.scalars(
+        select(Comment).where(
+            Comment.post_id.in_(post_ids),
+            Comment.posted_at.isnot(None),
+        )
+    )).all()
+
+    by_day: dict = defaultdict(lambda: {"positive": 0, "negative": 0, "neutral": 0, "total": 0, "total_likes": 0})
+    for c in comments:
+        day = c.posted_at.date().isoformat()
+        by_day[day]["total"] += 1
+        by_day[day]["total_likes"] += c.likes or 0
+        if c.sentiment in ("positive", "negative", "neutral"):
+            by_day[day][c.sentiment] += 1
+
+    return [
+        {
+            "date": day,
+            "positive": v["positive"],
+            "negative": v["negative"],
+            "neutral":  v["neutral"],
+            "total":    v["total"],
+            "avg_likes": round(v["total_likes"] / v["total"], 2) if v["total"] else 0,
+        }
+        for day, v in sorted(by_day.items())
+    ]
+
+
 @router.get("/{campaign_id}/topics")
 async def get_topics(campaign_id: int, db: AsyncSession = Depends(get_db)):
     from app.models.comment import Comment

@@ -15,7 +15,7 @@ from typing import List, Dict, Optional
 logger = logging.getLogger(__name__)
 
 _AI_SAMPLE_SIZE = 150   # max comments sent to Gemini per call
-_AI_MODEL = "gemini-2.0-flash"
+_AI_MODEL = "gemini-2.5-flash"
 _AI_RETRIES = 2
 
 _STOPWORDS_AR = {

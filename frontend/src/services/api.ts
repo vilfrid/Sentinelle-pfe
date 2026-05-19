@@ -25,15 +25,17 @@ export const stopCreator       = (id: number) => api.post(`/creators/${id}/stop`
 export const restartCreator    = (id: number) => api.post(`/creators/${id}/restart`).then((r) => r.data);
 export const getCreatorPosts   = (id: number) => api.get(`/creators/${id}/posts`).then((r) => r.data);
 export const updateCreator = (id: number, data: any) => api.patch(`/creators/${id}`, data).then((r) => r.data);
-export const getCreatorComments = (id: number, sentiment?: string) =>
-  api.get(`/creators/${id}/comments`, { params: sentiment ? { sentiment } : {} }).then((r) => r.data);
+export const getCreatorComments = (id: number, sentiment?: string, sort?: string) =>
+  api.get(`/creators/${id}/comments`, { params: { ...(sentiment ? { sentiment } : {}), ...(sort ? { sort } : {}) } }).then((r) => r.data);
+export const getTopComments = (id: number) => api.get(`/creators/${id}/top-comments`).then((r) => r.data);
 
 // --- Analytics ---
 export const getMetrics          = (campaignId: number) => api.get(`/analytics/${campaignId}/metrics`).then((r) => r.data);
 export const computeMetrics      = (campaignId: number, period = "weekly") =>
   api.post(`/analytics/${campaignId}/compute`, null, { params: { period } }).then((r) => r.data);
-export const getTopics           = (campaignId: number) => api.get(`/analytics/${campaignId}/topics`).then((r) => r.data);
-export const getSentimentTimeline = (campaignId: number) =>
+export const getTopics             = (campaignId: number) => api.get(`/analytics/${campaignId}/topics`).then((r) => r.data);
+export const getCommentTimeline    = (campaignId: number) => api.get(`/analytics/${campaignId}/comment-timeline`).then((r) => r.data);
+export const getSentimentTimeline  = (campaignId: number) =>
   api.get(`/dashboard/sentiment-timeline/${campaignId}`).then((r) => r.data);
 
 // --- Dashboard ---
@@ -51,8 +53,8 @@ export const computeEmbeddings = () =>
   api.post("/matching/compute-embeddings").then((r) => r.data);
 
 // --- Comments ---
-export const getComments = (campaignId: number, sentiment?: string) =>
-  api.get("/comments/", { params: { campaign_id: campaignId, ...(sentiment ? { sentiment } : {}) } }).then((r) => r.data);
+export const getComments = (campaignId: number, sentiment?: string, sort?: string) =>
+  api.get("/comments/", { params: { campaign_id: campaignId, ...(sentiment ? { sentiment } : {}), ...(sort ? { sort } : {}) } }).then((r) => r.data);
 
 // --- Pipeline Debug ---
 export const getPipelineStatus = () => api.get("/pipeline/status").then((r) => r.data);

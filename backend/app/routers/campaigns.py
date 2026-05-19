@@ -25,7 +25,7 @@ def generate_keywords(
 ) -> List[str]:
     try:
         genai.configure(api_key=settings.GOOGLE_API_KEY)
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
 
         topics_line = ""
         if trending_topics:

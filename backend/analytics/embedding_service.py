@@ -12,7 +12,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "models/text-embedding-004"
+_MODEL = "models/gemini-embedding-002"
 
 
 class EmbeddingService:

@@ -15,6 +15,7 @@ router = APIRouter()
 async def list_comments(
     campaign_id: Optional[int] = Query(None),
     sentiment: Optional[str] = Query(None),
+    sort: str = Query("date", enum=["date", "likes"]),
     limit: int = Query(200, le=1000),
     offset: int = Query(0),
     db: AsyncSession = Depends(get_db),
@@ -27,6 +28,7 @@ async def list_comments(
         q = q.where(Comment.post_id.in_(post_ids))
     if sentiment:
         q = q.where(Comment.sentiment == sentiment)
-    q = q.order_by(Comment.scraped_at.desc()).offset(offset).limit(limit)
+    order = Comment.likes.desc() if sort == "likes" else Comment.scraped_at.desc()
+    q = q.order_by(order).offset(offset).limit(limit)
     result = await db.scalars(q)
     return result.all()

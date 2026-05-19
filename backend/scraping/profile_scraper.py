@@ -47,6 +47,7 @@ async def discover_instagram(username_or_url: str, session_id: str = "") -> Dict
     profile_url = f"https://www.instagram.com/{username}/"
     posts: List[Dict] = []
     page_title = ""
+    creator_info: Dict = {}
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -76,7 +77,38 @@ async def discover_instagram(username_or_url: str, session_id: str = "") -> Dict
         page = await ctx.new_page()
 
         async def intercept(response):
-            if "/graphql/query" not in response.url:
+            url = response.url
+
+            # ── User profile info (/api/v1/users/web_profile_info/ or /userinfo/) ──
+            if "web_profile_info" in url or ("/api/v1/users/" in url and "/info" in url):
+                try:
+                    body = await response.json()
+                    # Two possible shapes: {data: {user: {...}}} or {user: {...}}
+                    user = (
+                        body.get("data", {}).get("user")
+                        or body.get("user")
+                        or {}
+                    )
+                    if user and not creator_info:
+                        # Private API shape: follower_count, biography, full_name
+                        # GraphQL shape: edge_followed_by.count, biography, full_name
+                        follower_count = (
+                            user.get("follower_count")
+                            or (user.get("edge_followed_by") or {}).get("count")
+                        )
+                        creator_info.update({
+                            "follower_count":  follower_count,
+                            "bio":             user.get("biography", ""),
+                            "display_name":    user.get("full_name", ""),
+                            "is_verified":     bool(user.get("is_verified", False)),
+                            "avatar_url":      user.get("profile_pic_url", ""),
+                            "media_count":     user.get("media_count") or (user.get("edge_owner_to_timeline_media") or {}).get("count"),
+                        })
+                        logger.info("Instagram: profile info captured — %s followers", follower_count)
+                except Exception:
+                    pass
+
+            if "/graphql/query" not in url:
                 return
             try:
                 body = await response.json()
@@ -136,16 +168,17 @@ async def discover_instagram(username_or_url: str, session_id: str = "") -> Dict
         await browser.close()
 
     logger.info("Instagram @%s: found %d posts (page: %s)", username, len(posts), page_title)
-    return {"posts": posts, "page_title": page_title}
+    return {"posts": posts, "page_title": page_title, "creator_info": creator_info}
 
 
 # ── TikTok ────────────────────────────────────────────────────────────────────
 
-async def discover_tiktok(username_or_url: str) -> List[Dict]:
+async def discover_tiktok(username_or_url: str) -> Dict:
     from app.config import settings
     username = _normalize(username_or_url.rstrip("/").split("/")[-1])
     profile_url = f"https://www.tiktok.com/@{username}"
     posts: List[Dict] = []
+    creator_info: Dict = {}
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -187,13 +220,26 @@ async def discover_tiktok(username_or_url: str) -> List[Dict]:
                             posts.append({
                                 "url": f"https://www.tiktok.com/@{username}/video/{aweme_id}",
                                 "external_id": str(aweme_id),
-                                "likes": stats.get("diggCount", 0) or 0,
-                                "views": stats.get("playCount", 0) or 0,
-                                "shares": stats.get("shareCount", 0) or 0,
+                                "likes":         stats.get("diggCount", 0) or 0,
+                                "views":         stats.get("playCount", 0) or 0,
+                                "shares":        stats.get("shareCount", 0) or 0,
                                 "comment_count": stats.get("commentCount", 0) or 0,
-                                "caption": (item.get("desc", "") or "")[:500],
-                                "posted_at": item.get("createTime"),
+                                "collects":      stats.get("collectCount", 0) or 0,
+                                "caption":       (item.get("desc", "") or "")[:500],
+                                "posted_at":     item.get("createTime"),
                             })
+                        # Extract creator profile from author field (same data on every item)
+                        if not creator_info and items:
+                            author = items[0].get("author", {})
+                            if author:
+                                creator_info.update({
+                                    "follower_count": author.get("followerCount", 0),
+                                    "bio":            author.get("signature", ""),
+                                    "display_name":   author.get("nickname", ""),
+                                    "is_verified":    bool(author.get("verified", False)),
+                                    "total_likes":    author.get("heartCount", 0),
+                                    "video_count":    author.get("videoCount", 0),
+                                })
                 except Exception as exc:
                     logger.warning("TikTok: failed to parse item_list response: %s", exc)
 
@@ -213,12 +259,12 @@ async def discover_tiktok(username_or_url: str) -> List[Dict]:
         await browser.close()
 
     logger.info("TikTok profile %s: found %d videos", username, len(posts))
-    return posts
+    return {"posts": posts, "creator_info": creator_info}
 
 
 # ── YouTube — use yt-dlp (no browser needed) ──────────────────────────────────
 
-async def discover_youtube(channel_url: str) -> List[Dict]:
+async def discover_youtube(channel_url: str) -> Dict:
     import yt_dlp
 
     if not channel_url.startswith("http"):
@@ -243,20 +289,37 @@ async def discover_youtube(channel_url: str) -> List[Dict]:
         info = await loop.run_in_executor(None, _extract)
     except Exception as exc:
         logger.error("yt-dlp channel discovery failed for %s: %s", channel_url, exc)
-        return []
+        return {"posts": [], "creator_info": {}}
 
     posts = []
+    creator_info: Dict = {}
+
     if info:
+        # Channel-level metadata available from the playlist info
+        creator_info = {
+            "display_name":    info.get("channel") or info.get("uploader"),
+            "follower_count":  info.get("channel_follower_count"),
+            "avatar_url":      info.get("thumbnail"),
+            "channel_id":      info.get("channel_id"),
+            "uploader_id":     info.get("uploader_id"),  # @handle
+        }
+        # Per-video: flat extraction gives id, title, view_count, duration
         for entry in info.get("entries", []):
             if entry and entry.get("id"):
                 vid_id = entry["id"]
                 posts.append({
-                    "url": f"https://www.youtube.com/watch?v={vid_id}",
-                    "external_id": vid_id,
+                    "url":          f"https://www.youtube.com/watch?v={vid_id}",
+                    "external_id":  vid_id,
+                    "views":        entry.get("view_count", 0) or 0,
+                    "likes":        0,   # not available in flat mode
+                    "shares":       0,
+                    "caption":      (entry.get("title") or "")[:500],
+                    "posted_at":    entry.get("timestamp"),
                 })
 
-    logger.info("YouTube channel %s: found %d videos", channel_url, len(posts))
-    return posts
+    logger.info("YouTube channel %s: found %d videos, %s subscribers",
+                channel_url, len(posts), creator_info.get("follower_count", "?"))
+    return {"posts": posts, "creator_info": creator_info}
 
 
 # ── dispatcher ────────────────────────────────────────────────────────────────

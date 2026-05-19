@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getCreator, getCreatorPosts, getCreatorComments, refreshCreator, stopCreator } from "../services/api";
+import { getCreator, getCreatorPosts, getCreatorComments, getTopComments, refreshCreator, stopCreator } from "../services/api";
 import {
-  RefreshCw, ArrowLeft, MessageSquare, FileText, Loader,
-  TrendingUp, CheckCircle, AlertCircle, ExternalLink, Square
+  RefreshCw, ArrowLeft, MessageSquare, Loader, Heart,
+  CheckCircle, AlertCircle, ExternalLink, Square, Users, Star
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
@@ -14,8 +14,22 @@ import { clsx } from "clsx";
 
 const SENTIMENT_COLORS = { positive: "#22c55e", negative: "#ef4444", neutral: "#6b7280" };
 
-type Post  = { id: number; url: string; external_id: string; likes: number; views: number; comment_count: number; etl_status: string; scraped_at: string };
-type Comment = { id: number; author: string; raw_text: string; sentiment?: string; sentiment_score?: number; language?: string; likes: number };
+type Post    = { id: number; url: string; external_id: string; likes: number; views: number; comment_count: number; etl_status: string; scraped_at: string };
+type Comment = { id: number; author: string; raw_text: string; sentiment?: string; sentiment_score?: number; language?: string; likes: number; posted_at?: string };
+type TopComment = { id: number; author: string; text: string; likes: number; sentiment?: string; sentiment_score?: number; posted_at?: string };
+
+const fmtFollowers = (n: number) => {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return n > 0 ? n.toString() : null;
+};
+const getTier = (n: number) => {
+  if (n >= 1_000_000) return { label: "Mega",  cls: "text-yellow-400 bg-yellow-500/10" };
+  if (n >= 100_000)   return { label: "Macro", cls: "text-purple-400 bg-purple-500/10" };
+  if (n >= 10_000)    return { label: "Micro", cls: "text-blue-400 bg-blue-500/10" };
+  if (n > 0)          return { label: "Nano",  cls: "text-green-400 bg-green-500/10" };
+  return null;
+};
 
 const statusColor = (s: string) =>
   ({ analyzed: "text-green-400", transformed: "text-blue-400", scraped: "text-yellow-400", pending: "text-gray-400", scrape_failed: "text-red-400", etl_failed: "text-red-400" }[s] ?? "text-gray-400");
@@ -26,6 +40,7 @@ export default function CreatorProfile() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [sentFilter, setSentFilter] = useState("all");
+  const [commentSort, setCommentSort] = useState<"date" | "likes">("date");
   const [activeTab, setActiveTab] = useState<"overview" | "posts" | "comments">("overview");
 
   const { data: creator, isLoading } = useQuery({
@@ -44,9 +59,15 @@ export default function CreatorProfile() {
   });
 
   const { data: comments = [] } = useQuery({
-    queryKey: ["creator-comments", creatorId, sentFilter],
-    queryFn: () => getCreatorComments(creatorId, sentFilter === "all" ? undefined : sentFilter),
+    queryKey: ["creator-comments", creatorId, sentFilter, commentSort],
+    queryFn: () => getCreatorComments(creatorId, sentFilter === "all" ? undefined : sentFilter, commentSort),
     enabled: activeTab === "comments",
+  });
+
+  const { data: topComments = [] } = useQuery({
+    queryKey: ["top-comments", creatorId],
+    queryFn: () => getTopComments(creatorId),
+    enabled: activeTab === "overview" && creator?.status === "done",
   });
 
   const refresh = useMutation({
@@ -84,12 +105,27 @@ export default function CreatorProfile() {
         </button>
         <div className="flex-1">
           <div className="flex items-center gap-3 flex-wrap">
-            <div className="w-12 h-12 rounded-full bg-brand-600/20 flex items-center justify-center text-brand-400 font-bold text-xl">
-              {creator.username[0]?.toUpperCase()}
-            </div>
+            {creator.avatar_url ? (
+              <img src={creator.avatar_url} alt={creator.username}
+                className="w-14 h-14 rounded-full object-cover border border-white/10 shrink-0" />
+            ) : (
+              <div className="w-14 h-14 rounded-full bg-brand-600/20 flex items-center justify-center text-brand-400 font-bold text-2xl">
+                {creator.username[0]?.toUpperCase()}
+              </div>
+            )}
             <div>
-              <h1 className="text-2xl font-bold">@{creator.username}</h1>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="text-2xl font-bold">@{creator.username}</h1>
+                {(() => { const t = getTier(creator.follower_count); return t ? (
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${t.cls}`}>{t.label}</span>
+                ) : null; })()}
+              </div>
               {creator.display_name && <p className="text-gray-400 text-sm">{creator.display_name}</p>}
+              {creator.follower_count > 0 && (
+                <p className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
+                  <Users size={10} /> {fmtFollowers(creator.follower_count)} followers
+                </p>
+              )}
             </div>
             <span className={clsx("flex items-center gap-1 text-xs px-2.5 py-1 rounded-full font-medium", {
               "bg-green-500/10 text-green-400": creator.status === "done",
@@ -143,10 +179,10 @@ export default function CreatorProfile() {
       {/* Stats row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: "Posts scraped",    value: creator.total_posts_scraped },
-          { label: "Total comments",   value: creator.total_comments.toLocaleString() },
-          { label: "Positive",         value: `${creator.positive_pct}%`, color: "text-green-400" },
-          { label: "Negative",         value: `${creator.negative_pct}%`, color: "text-red-400" },
+          { label: "Followers",      value: fmtFollowers(creator.follower_count) ?? creator.total_posts_scraped + " posts" },
+          { label: "Total comments", value: creator.total_comments.toLocaleString() },
+          { label: "Positive",       value: `${creator.positive_pct}%`, color: "text-green-400" },
+          { label: "Negative",       value: `${creator.negative_pct}%`, color: "text-red-400" },
         ].map(({ label, value, color }) => (
           <div key={label} className="card">
             <p className="text-xs text-gray-400">{label}</p>
@@ -154,6 +190,14 @@ export default function CreatorProfile() {
           </div>
         ))}
       </div>
+
+      {/* Bio */}
+      {creator.bio && (
+        <div className="card">
+          <p className="text-xs text-gray-500 mb-1">Bio</p>
+          <p className="text-sm text-gray-300">{creator.bio}</p>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-white/5">
@@ -168,6 +212,7 @@ export default function CreatorProfile() {
 
       {/* Overview tab */}
       {activeTab === "overview" && (
+        <>
         <div className="grid lg:grid-cols-2 gap-6">
           <div className="card">
             <h2 className="font-semibold mb-4">Sentiment Distribution</h2>
@@ -212,6 +257,38 @@ export default function CreatorProfile() {
             </div>
           )}
         </div>
+
+        {/* Top comments by likes */}
+        {(topComments as TopComment[]).length > 0 && (
+          <div className="card">
+            <h2 className="font-semibold mb-3 flex items-center gap-2">
+              <Star size={14} className="text-yellow-400" /> Top Comments by Likes
+            </h2>
+            <div className="space-y-2">
+              {(topComments as TopComment[]).map((c) => (
+                <div key={c.id} className="flex items-start gap-3 py-2 border-b border-white/5 last:border-0">
+                  <div className="flex items-center gap-1 text-rose-400 text-xs shrink-0 w-12 justify-end">
+                    <Heart size={10} fill="currentColor" /> {c.likes}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <span className="text-xs font-medium text-gray-400">@{c.author}</span>
+                      {c.sentiment && (
+                        <span className={clsx("text-xs px-1.5 py-0.5 rounded-full", {
+                          "badge-positive": c.sentiment === "positive",
+                          "badge-negative": c.sentiment === "negative",
+                          "badge-neutral":  c.sentiment === "neutral",
+                        })}>{c.sentiment}</span>
+                      )}
+                    </div>
+                    <p className="text-sm text-gray-200 truncate">{c.text}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        </>
       )}
 
       {/* Posts tab */}
@@ -239,14 +316,27 @@ export default function CreatorProfile() {
       {/* Comments tab */}
       {activeTab === "comments" && (
         <div className="space-y-4">
-          <div className="flex gap-1">
-            {["all", "positive", "negative", "neutral"].map((f) => (
-              <button key={f} onClick={() => setSentFilter(f)}
-                className={clsx("px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-colors", {
-                  "bg-brand-600 text-white": sentFilter === f,
-                  "bg-dark-700 text-gray-400 hover:text-white": sentFilter !== f,
-                })}>{f}</button>
-            ))}
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex gap-1">
+              {["all", "positive", "negative", "neutral"].map((f) => (
+                <button key={f} onClick={() => setSentFilter(f)}
+                  className={clsx("px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-colors", {
+                    "bg-brand-600 text-white": sentFilter === f,
+                    "bg-dark-700 text-gray-400 hover:text-white": sentFilter !== f,
+                  })}>{f}</button>
+              ))}
+            </div>
+            <div className="flex gap-1 ml-auto">
+              {(["date", "likes"] as const).map((s) => (
+                <button key={s} onClick={() => setCommentSort(s)}
+                  className={clsx("px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-colors flex items-center gap-1", {
+                    "bg-dark-600 text-white": commentSort === s,
+                    "bg-dark-700 text-gray-400 hover:text-white": commentSort !== s,
+                  })}>
+                  {s === "likes" ? <><Heart size={9} /> Most Liked</> : "Latest"}
+                </button>
+              ))}
+            </div>
           </div>
 
           {comments.length === 0 ? (
@@ -267,18 +357,28 @@ export default function CreatorProfile() {
                           })}>{c.sentiment}</span>
                         )}
                         {c.language && <span className="text-xs bg-dark-700 text-gray-500 px-2 py-0.5 rounded-full">{c.language}</span>}
+                        {c.posted_at && (
+                          <span className="text-xs text-gray-600">{new Date(c.posted_at).toLocaleDateString()}</span>
+                        )}
                       </div>
                       <p className="text-sm text-gray-200">{c.raw_text}</p>
                     </div>
-                    {c.sentiment_score !== undefined && (
-                      <p className={clsx("text-sm font-bold shrink-0", {
-                        "text-green-400": (c.sentiment_score ?? 0) > 0,
-                        "text-red-400": (c.sentiment_score ?? 0) < 0,
-                        "text-gray-400": (c.sentiment_score ?? 0) === 0,
-                      })}>
-                        {(c.sentiment_score ?? 0) > 0 ? "+" : ""}{c.sentiment_score?.toFixed(2)}
-                      </p>
-                    )}
+                    <div className="text-right shrink-0 space-y-1">
+                      {c.sentiment_score !== undefined && (
+                        <p className={clsx("text-sm font-bold", {
+                          "text-green-400": (c.sentiment_score ?? 0) > 0,
+                          "text-red-400": (c.sentiment_score ?? 0) < 0,
+                          "text-gray-400": (c.sentiment_score ?? 0) === 0,
+                        })}>
+                          {(c.sentiment_score ?? 0) > 0 ? "+" : ""}{c.sentiment_score?.toFixed(2)}
+                        </p>
+                      )}
+                      {c.likes > 0 && (
+                        <p className="text-xs text-rose-400 flex items-center gap-1 justify-end">
+                          <Heart size={9} fill="currentColor" /> {c.likes}
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}

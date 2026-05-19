@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getCreator, getCreatorPosts, getCreatorComments, refreshCreator } from "../services/api";
+import { getCreator, getCreatorPosts, getCreatorComments, refreshCreator, stopCreator } from "../services/api";
 import {
   RefreshCw, ArrowLeft, MessageSquare, FileText, Loader,
-  TrendingUp, CheckCircle, AlertCircle, ExternalLink
+  TrendingUp, CheckCircle, AlertCircle, ExternalLink, Square
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
@@ -15,7 +15,7 @@ import { clsx } from "clsx";
 const SENTIMENT_COLORS = { positive: "#22c55e", negative: "#ef4444", neutral: "#6b7280" };
 
 type Post  = { id: number; url: string; external_id: string; likes: number; views: number; comment_count: number; etl_status: string; scraped_at: string };
-type Comment = { id: number; author: string; raw_text: string; arabized_text?: string; sentiment?: string; sentiment_score?: number; language?: string; likes: number };
+type Comment = { id: number; author: string; raw_text: string; sentiment?: string; sentiment_score?: number; language?: string; likes: number };
 
 const statusColor = (s: string) =>
   ({ analyzed: "text-green-400", transformed: "text-blue-400", scraped: "text-yellow-400", pending: "text-gray-400", scrape_failed: "text-red-400", etl_failed: "text-red-400" }[s] ?? "text-gray-400");
@@ -51,6 +51,11 @@ export default function CreatorProfile() {
 
   const refresh = useMutation({
     mutationFn: () => refreshCreator(creatorId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["creator", creatorId] }),
+  });
+
+  const stop = useMutation({
+    mutationFn: () => stopCreator(creatorId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["creator", creatorId] }),
   });
 
@@ -107,11 +112,19 @@ export default function CreatorProfile() {
             </a>
           )}
         </div>
-        <button onClick={() => refresh.mutate()} disabled={isRunning}
-          className="flex items-center gap-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 border border-white/10 text-gray-300 px-4 py-2 rounded-lg text-sm transition-colors">
-          <RefreshCw size={14} className={isRunning ? "animate-spin" : ""} />
-          Re-run Pipeline
-        </button>
+        {isRunning ? (
+          <button onClick={() => stop.mutate()} disabled={stop.isPending}
+            className="flex items-center gap-2 bg-yellow-500/10 hover:bg-yellow-500/20 disabled:opacity-50 border border-yellow-500/30 text-yellow-400 px-4 py-2 rounded-lg text-sm transition-colors">
+            <Square size={14} />
+            Stop Pipeline
+          </button>
+        ) : (
+          <button onClick={() => refresh.mutate()} disabled={refresh.isPending}
+            className="flex items-center gap-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 border border-white/10 text-gray-300 px-4 py-2 rounded-lg text-sm transition-colors">
+            <RefreshCw size={14} className={refresh.isPending ? "animate-spin" : ""} />
+            Re-run Pipeline
+          </button>
+        )}
       </div>
 
       {isRunning && (
@@ -256,9 +269,6 @@ export default function CreatorProfile() {
                         {c.language && <span className="text-xs bg-dark-700 text-gray-500 px-2 py-0.5 rounded-full">{c.language}</span>}
                       </div>
                       <p className="text-sm text-gray-200">{c.raw_text}</p>
-                      {c.arabized_text && (
-                        <p className="text-sm text-brand-300" dir="rtl">{c.arabized_text}</p>
-                      )}
                     </div>
                     {c.sentiment_score !== undefined && (
                       <p className={clsx("text-sm font-bold shrink-0", {

@@ -5,10 +5,11 @@ Full automated pipeline:
       ↓ (discover all post URLs)
   scrape_and_process_post(url, platform, creator_id)   ← one task per post
       ↓  scrape → JSONL
-      ↓  ETL clean → arabize
+      ↓  ETL clean
       ↓  sentiment analysis
   finalize_creator(creator_id)
       ↓  compute aggregate stats (mood, pct, topics)
+      ↓  generate embedding for matching
 """
 import asyncio
 import json
@@ -181,7 +182,14 @@ def launch_creator_pipeline(self, creator_id: int):
     _log(creator_id, "scrape", "info", f"Fanning out {len(posts)} post tasks in parallel...")
 
     post_tasks = group(
-        scrape_and_process_post.s(p["url"], p["external_id"], info["platform"], creator_id)
+        scrape_and_process_post.s(p["url"], p["external_id"], info["platform"], creator_id, {
+            "likes": p.get("likes", 0),
+            "views": p.get("views", 0),
+            "shares": p.get("shares", 0),
+            "comment_count": p.get("comment_count", 0),
+            "caption": p.get("caption", ""),
+            "posted_at": p.get("posted_at"),
+        })
         for p in posts
     )
     chord(post_tasks)(finalize_creator.s(creator_id))
@@ -192,12 +200,11 @@ def launch_creator_pipeline(self, creator_id: int):
 # ── Task 2: scrape one post + ETL + sentiment ─────────────────────────────────
 
 @celery_app.task(bind=True, name="workers.tasks.scrape_and_process_post")
-def scrape_and_process_post(self, url: str, external_id: str, platform: str, creator_id: int):
+def scrape_and_process_post(self, url: str, external_id: str, platform: str, creator_id: int, post_metadata: dict = None):
     if _is_stopped(creator_id):
         return {"skipped": True, "reason": "stopped"}
 
     # Stagger parallel Instagram requests so the same session isn't hit simultaneously.
-    # Without this, Instagram rate-limits and returns next_max_id=null after page 1.
     if platform == "instagram":
         time.sleep(random.uniform(1, 10))
 
@@ -220,15 +227,35 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
         creator = db.get(Creator, creator_id)
         campaign_id = creator.campaign_id if creator else None
 
+        meta = post_metadata or {}
+        posted_at = None
+        if meta.get("posted_at"):
+            try:
+                posted_at = datetime.fromtimestamp(float(meta["posted_at"]), tz=timezone.utc)
+            except (TypeError, ValueError, OSError):
+                pass
+
         existing = db.query(Post).filter(Post.external_id == external_id).first()
         if existing:
             if existing.etl_status in ("transformed", "analyzed"):
                 _log(creator_id, "scrape", "info", f"Skipped (already processed): {short_url}")
                 return {"post_id": existing.id, "skipped": True}
-            # exists but not yet processed (e.g. stale pending from a cancelled run) — re-process it
             _log(creator_id, "scrape", "info", f"Re-processing unfinished post: {short_url}")
             post_id = existing.id
             existing.etl_status = "pending"
+            # Update metadata fields if we now have better data
+            if meta.get("likes"):
+                existing.likes = meta["likes"]
+            if meta.get("views"):
+                existing.views = meta["views"]
+            if meta.get("shares"):
+                existing.shares = meta["shares"]
+            if meta.get("comment_count"):
+                existing.comment_count = meta["comment_count"]
+            if meta.get("caption"):
+                existing.caption = meta["caption"]
+            if posted_at:
+                existing.posted_at = posted_at
             db.commit()
         else:
             post = Post(
@@ -237,6 +264,12 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
                 creator_id=creator_id,
                 external_id=external_id,
                 url=url,
+                likes=meta.get("likes", 0),
+                views=meta.get("views", 0),
+                shares=meta.get("shares", 0),
+                comment_count=meta.get("comment_count", 0),
+                caption=meta.get("caption", ""),
+                posted_at=posted_at,
                 etl_status="pending",
             )
             db.add(post)
@@ -290,33 +323,14 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
         _update_post_status(post_id, "etl_failed")
         return {"post_id": post_id, "error": "0 comments extracted"}
 
-    # ── Arabizi transform ──
-    _log(creator_id, "arabizi", "info",
-         f"Sending {len(raw_comments)} texts to Gemma 3 27B (GOOGLE_API_KEY: "
-         f"{'present' if settings.GOOGLE_API_KEY else 'MISSING'})...")
-    try:
-        from etl.transformers.arabizi_transformer import ArabiziTransformer
-        transformer = ArabiziTransformer()
-        texts = [c["raw_text"] for c in raw_comments]
-        arabized = transformer.transform_batch(texts)
-        ignored   = sum(1 for a in arabized if transformer.is_ignored(a))
-        filled    = sum(1 for a in arabized if a and not transformer.is_ignored(a))
-        empty     = len(arabized) - ignored - filled
-        _log(creator_id, "arabizi", "ok" if filled > 0 else "warn",
-             f"Transformed {len(arabized)} texts — {filled} arabized, "
-             f"{ignored} ignored (foreign), {empty} empty (parse failure)")
-    except Exception as exc:
-        _log(creator_id, "arabizi", "error", f"Arabizi transformer crashed: {exc}")
-        arabized = [""] * len(raw_comments)
-
-    # ── Store comments ──
+    # ── Store comments (no Arabizi transform — direct storage) ──
     _log(creator_id, "etl", "info", "Saving comments to DB...")
     try:
         from app.models.comment import Comment
         db = get_sync_db()
         try:
             stored = 0
-            for raw, arab in zip(raw_comments, arabized):
+            for raw in raw_comments:
                 if db.query(Comment).filter(
                     Comment.post_id == post_id,
                     Comment.external_id == raw.get("external_id", ""),
@@ -328,8 +342,8 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
                     author=raw.get("author", ""),
                     raw_text=raw["raw_text"],
                     cleaned_text=raw["raw_text"],
-                    arabized_text=arab if arab and not transformer.is_ignored(arab) else None,
-                    language="arabizi" if arab and not transformer.is_ignored(arab) else "foreign",
+                    arabized_text=None,
+                    language="raw",
                     likes=raw.get("likes", 0),
                 )
                 db.add(c)
@@ -357,7 +371,7 @@ def scrape_and_process_post(self, url: str, external_id: str, platform: str, cre
                 Comment.post_id == post_id,
                 Comment.sentiment == None,
             ).all()
-            texts_to_analyze = [c.arabized_text or c.cleaned_text or c.raw_text for c in comments]
+            texts_to_analyze = [c.cleaned_text or c.raw_text for c in comments]
         finally:
             db.close()
 
@@ -400,7 +414,7 @@ def finalize_creator(results, creator_id: int):
     from app.models.creator import Creator
     from app.models.post import Post
     from app.models.comment import Comment
-    from analytics.topics_engine import extract_trending_topics
+    from analytics.topics_engine import extract_topics_with_ai
 
     _log(creator_id, "finalize", "info", "All posts processed — aggregating stats...")
 
@@ -423,8 +437,10 @@ def finalize_creator(results, creator_id: int):
             if total > 0 else 0.0
         )
 
-        texts = [c.arabized_text or c.raw_text for c in comments if c.arabized_text or c.raw_text]
-        top_topics = extract_trending_topics(texts, top_n=10)
+        texts = [c.cleaned_text or c.raw_text for c in comments if c.cleaned_text or c.raw_text]
+        _log(creator_id, "finalize", "info",
+             f"Extracting topics from {len(texts)} comments via Gemini AI...")
+        top_topics = extract_topics_with_ai(texts, top_n=10)
 
         if total == 0:
             mood = "unknown"
@@ -445,6 +461,25 @@ def finalize_creator(results, creator_id: int):
         creator.audience_mood = mood
         creator.status = "done"
         creator.last_pipeline_at = datetime.now(timezone.utc)
+
+        # ── Generate embedding for matching ──
+        _log(creator_id, "finalize", "info", "Generating content embedding for matching...")
+        try:
+            from analytics.embedding_service import EmbeddingService
+            svc = EmbeddingService()
+            topic_names = [t["topic"] for t in top_topics] if top_topics else []
+            summary = svc.build_creator_text(creator.username, creator.bio, topic_names, mood)
+            embedding = svc.generate_embedding(summary)
+            if embedding:
+                creator.content_summary = summary
+                creator.content_embedding = json.dumps(embedding)
+                _log(creator_id, "finalize", "ok",
+                     f"Embedding generated ({len(embedding)} dimensions)")
+            else:
+                _log(creator_id, "finalize", "warn", "Embedding generation returned empty")
+        except Exception as exc:
+            _log(creator_id, "finalize", "warn", f"Embedding generation failed (non-fatal): {exc}")
+
         db.commit()
 
         _log(creator_id, "finalize", "ok",

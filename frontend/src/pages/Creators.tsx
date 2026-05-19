@@ -12,6 +12,7 @@ type Creator = {
   status: string; total_posts_scraped: number; total_comments: number;
   positive_pct: number; negative_pct: number; neutral_pct: number;
   audience_mood?: string; last_pipeline_at?: string; error_message?: string;
+  campaign_id?: number;
 };
 
 const StatusBadge = ({ status }: { status: string }) => {
@@ -162,7 +163,7 @@ export default function Creators() {
             <label className="text-xs text-gray-400 mb-1 block">Link to Campaign (optional)</label>
             <select value={form.campaign_id} onChange={(e) => setForm({ ...form, campaign_id: e.target.value })}
               className="w-full bg-dark-700 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none">
-              <option value="">— none —</option>
+              <option value="">— none (Global Pool) —</option>
               {campaigns.map((c: { id: number; name: string }) => (
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
@@ -203,6 +204,9 @@ export default function Creators() {
                     <StatusBadge status={c.status} />
                     {c.audience_mood && (
                       <span className="text-xs text-gray-400 capitalize">{c.audience_mood} mood</span>
+                    )}
+                    {!c.campaign_id && (
+                      <span className="text-xs bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded-full">Global Pool</span>
                     )}
                   </div>
 

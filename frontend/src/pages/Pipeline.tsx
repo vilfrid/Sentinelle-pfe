@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { getPipelineStatus, getCreatorLogs } from "../services/api";
-import { Loader, CheckCircle, AlertCircle, Clock, RefreshCw, ChevronDown, ChevronRight } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { getPipelineStatus, getCreatorLogs, stopCreator } from "../services/api";
+import { Loader, CheckCircle, AlertCircle, Clock, RefreshCw, ChevronDown, ChevronRight, Square } from "lucide-react";
 import { clsx } from "clsx";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -138,12 +138,21 @@ const STEP_LABEL: Record<string, string> = {
 function CreatorRow({ creator }: { creator: any }) {
   const isActive = ACTIVE.includes(creator.status);
   const [open, setOpen] = useState(isActive);
+  const qc = useQueryClient();
 
   const { data: logs = [] } = useQuery({
     queryKey: ["creator-logs", creator.id],
     queryFn: () => getCreatorLogs(creator.id),
     refetchInterval: isActive ? 2000 : false,
     enabled: open,
+  });
+
+  const stop = useMutation({
+    mutationFn: () => stopCreator(creator.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["pipeline-status"] });
+      qc.invalidateQueries({ queryKey: ["creator-logs", creator.id] });
+    },
   });
 
   return (
@@ -167,6 +176,16 @@ function CreatorRow({ creator }: { creator: any }) {
           <span className={clsx("px-2 py-0.5 rounded-full font-medium", STATUS_COLORS[creator.status] ?? STATUS_COLORS.idle)}>
             {creator.status}
           </span>
+          {isActive && (
+            <button
+              onClick={() => stop.mutate()}
+              disabled={stop.isPending}
+              title="Stop scraping"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-400 disabled:opacity-50 transition-colors border border-yellow-500/20 font-medium">
+              <Square size={11} />
+              Stop
+            </button>
+          )}
           <button onClick={() => setOpen(!open)}
             className="text-gray-500 hover:text-white transition-colors ml-1">
             {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}

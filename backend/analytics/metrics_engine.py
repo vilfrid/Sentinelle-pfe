@@ -49,13 +49,22 @@ class MetricsEngine:
         )
 
         total_likes = sum(p.likes for p in posts)
-        total_views = sum(p.views for p in posts) or 1
+        total_views = sum(p.views for p in posts)
         total_shares = sum(p.shares for p in posts)
         total_interactions = total_likes + len(comments) + total_shares
-        engagement_rate = total_interactions / total_views
 
-        # Impression score: weighted estimate (views × engagement multiplier)
-        impression_score = total_views * (1 + engagement_rate * 5)
+        if total_views > 0:
+            # Views available: standard engagement rate, capped at 100%
+            engagement_rate = min(total_interactions / total_views, 1.0)
+            impression_score = round(total_views * (1 + engagement_rate * 2), 2)
+        else:
+            # No view data (common on Instagram regular posts) — rate is undefined
+            engagement_rate = 0.0
+            # Impression estimate: each interaction type has a typical organic reach multiplier
+            #   like ≈ 3×, comment ≈ 8×, share ≈ 15× (conservative industry heuristics)
+            impression_score = round(
+                total_likes * 3 + len(comments) * 8 + total_shares * 15, 2
+            )
 
         # Virality: shares relative to total interactions
         virality_score = total_shares / max(total_interactions, 1)

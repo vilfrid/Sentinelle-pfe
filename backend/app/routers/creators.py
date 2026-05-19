@@ -10,7 +10,7 @@ from app.models.creator import Creator
 from app.models.platform import Platform
 from app.models.post import Post
 from app.models.comment import Comment
-from app.schemas.creator import CreatorCreate, CreatorOut
+from app.schemas.creator import CreatorCreate, CreatorOut, CreatorUpdate
 
 router = APIRouter()
 
@@ -69,6 +69,30 @@ async def get_creator(creator_id: int, db: AsyncSession = Depends(get_db)):
     creator = await db.get(Creator, creator_id)
     if not creator:
         raise HTTPException(404, "Creator not found")
+    return creator
+
+
+@router.patch("/{creator_id}", response_model=CreatorOut)
+async def update_creator(creator_id: int, payload: CreatorUpdate, db: AsyncSession = Depends(get_db)):
+    creator = await db.get(Creator, creator_id)
+    if not creator:
+        raise HTTPException(404, "Creator not found")
+    
+    # If linking to a new campaign, update all existing posts as well
+    if payload.campaign_id is not None and creator.campaign_id != payload.campaign_id:
+        from sqlalchemy import update
+        from app.models.post import Post
+        await db.execute(
+            update(Post)
+            .where(Post.creator_id == creator_id)
+            .values(campaign_id=payload.campaign_id)
+        )
+    
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(creator, field, value)
+        
+    await db.commit()
+    await db.refresh(creator)
     return creator
 
 
@@ -226,7 +250,6 @@ async def get_creator_comments(
             "id": c.id,
             "author": c.author,
             "raw_text": c.raw_text,
-            "arabized_text": c.arabized_text,
             "sentiment": c.sentiment,
             "sentiment_score": c.sentiment_score,
             "language": c.language,

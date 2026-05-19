@@ -74,14 +74,29 @@ export default function Analytics() {
       {latest && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {[
-            { label: "Impression Score", value: latest.impression_score?.toLocaleString() },
-            { label: "Engagement Rate", value: `${(latest.engagement_rate * 100).toFixed(2)}%` },
-            { label: "Virality Score", value: latest.virality_score?.toFixed(4) },
+            {
+              label: "Impression Score",
+              value: latest.impression_score?.toLocaleString() ?? "—",
+              sub: latest.engagement_rate === 0 ? "estimated (no views)" : undefined,
+            },
+            {
+              label: "Engagement Rate",
+              value: latest.engagement_rate > 0
+                ? `${(latest.engagement_rate * 100).toFixed(2)}%`
+                : "N/A",
+              sub: latest.engagement_rate === 0 ? "no view data" : undefined,
+            },
+            {
+              label: "Virality Score",
+              value: latest.virality_score > 0 ? latest.virality_score.toFixed(4) : "—",
+              sub: latest.virality_score === 0 ? "no shares captured" : undefined,
+            },
             { label: "Audience Mood", value: latest.audience_mood },
-          ].map(({ label, value }) => (
+          ].map(({ label, value, sub }) => (
             <div key={label} className="card">
               <p className="text-xs text-gray-400">{label}</p>
               <p className="text-xl font-bold mt-1 capitalize">{value}</p>
+              {sub && <p className="text-xs text-gray-600 mt-0.5">{sub}</p>}
             </div>
           ))}
         </div>

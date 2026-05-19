@@ -34,6 +34,10 @@ class Creator(Base):
     top_topics = Column(JSON, default=list)
     audience_mood = Column(String(50))
 
+    # Embedding for matching (generated from topics + bio + mood)
+    content_summary = Column(Text)                          # text used to create embedding
+    content_embedding = Column(Text)                        # JSON-serialized float vector
+
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     platform = relationship("Platform")

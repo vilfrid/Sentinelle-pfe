@@ -1,0 +1,75 @@
+Objet : Rapport de bug & correction — Endpoint GET /api/creators/ Erreur Interne du Serveur
+
+Bonjour,
+
+Je vous écris afin de documenter un bug qui provoquait une erreur interne du serveur (code 500)
+sur l'endpoint GET /api/creators/, utilisé pour récupérer la liste des créateurs dans l'application.
+
+────────────────────────────────────────────────────────────
+POURQUOI LE CRASH N'APPARAISSAIT QUE PENDANT UN SCRAPING ACTIF
+────────────────────────────────────────────────────────────
+
+C'est le point clé pour comprendre le bug.
+
+Lorsqu'un créateur est ajouté à la plateforme, le pipeline démarre immédiatement et passe par
+plusieurs étapes : découverte des publications, scraping des commentaires, analyse de sentiment,
+extraction des topics. Ce champ "top_topics" (les sujets tendance du créateur) n'est renseigné
+qu'à la toute fin du pipeline, une fois l'analyse complètement terminée.
+
+Pendant toute la durée du scraping, ce champ reste donc vide (valeur NULL) en base de données.
+
+Quand l'interface appelait GET /api/creators/ à ce moment précis, le serveur tentait de formater
+la réponse pour tous les créateurs, y compris celui en cours de traitement. Il rencontrait alors
+ce champ vide et échouait à construire la réponse, provoquant l'erreur 500.
+
+En dehors d'un scraping actif, tous les créateurs existants avaient déjà terminé leur pipeline et
+possédaient un champ top_topics correctement renseigné — l'endpoint fonctionnait donc sans problème.
+C'est pour cette raison que le bug était intermittent et difficile à reproduire sans déclencher
+un scraping au même moment.
+
+────────────────────────────────────────────────────────────
+CAUSES RACINES IDENTIFIÉES
+────────────────────────────────────────────────────────────
+
+Deux problèmes distincts ont été identifiés et corrigés :
+
+1. Instruction de retour mal placée dans le routeur créateurs
+
+   Dans le fichier de gestion des routes créateurs, la fonction chargée de lister tous les
+   créateurs renvoyait directement l'objet de requête base de données au lieu d'exécuter
+   cette requête et d'en retourner les résultats. Le serveur essayait alors de sérialiser
+   un objet interne SQLAlchemy comme s'il s'agissait d'une liste de créateurs, ce qui
+   provoquait une erreur immédiate.
+
+2. Absence de gestion des valeurs nulles dans le schéma de réponse
+
+   Le schéma de validation de la réponse API déclarait le champ top_topics comme une liste
+   obligatoire, sans prévoir le cas où ce champ serait NULL en base de données. Pendant un
+   scraping actif, les créateurs en cours de traitement ont systématiquement ce champ à NULL,
+   ce qui déclenchait une erreur de validation au moment de construire la réponse JSON.
+
+────────────────────────────────────────────────────────────
+CORRECTIONS APPLIQUÉES
+────────────────────────────────────────────────────────────
+
+- La fonction de listage des créateurs a été corrigée pour exécuter correctement la requête
+  base de données avant de retourner les résultats.
+
+- Le schéma de réponse a été mis à jour pour gérer les valeurs nulles sur le champ top_topics :
+  toute valeur absente est désormais automatiquement convertie en liste vide avant la validation,
+  ce qui permet à l'endpoint de répondre correctement même pendant un scraping en cours.
+
+────────────────────────────────────────────────────────────
+IMPACT & STATUT
+────────────────────────────────────────────────────────────
+
+Impact : L'endpoint GET /api/creators/ était inutilisable dès qu'un scraping était en cours,
+rendant la page Créateurs et le tableau de bord Pipeline complètement vides côté interface.
+
+Statut : Les deux corrections ont été appliquées. L'endpoint fonctionne désormais correctement,
+que le pipeline soit actif ou non.
+
+N'hésitez pas à me contacter pour toute question.
+
+Cordialement,
+L'équipe de développement Sentinelle

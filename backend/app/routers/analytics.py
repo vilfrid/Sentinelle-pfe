@@ -39,19 +39,37 @@ async def compute_metrics(
 async def get_topics(campaign_id: int, db: AsyncSession = Depends(get_db)):
     from app.models.comment import Comment
     from app.models.post import Post
-    from analytics.topics_engine import extract_trending_topics, extract_hashtags
+    from app.models.creator import Creator
+    from analytics.topics_engine import extract_hashtags
 
+    # Use topics already computed by finalize_creator (no live AI call needed)
+    creators = (await db.scalars(
+        select(Creator).where(Creator.campaign_id == campaign_id)
+    )).all()
+
+    topic_counts: dict = {}
+    for creator in creators:
+        if not creator.top_topics:
+            continue
+        for t in creator.top_topics:
+            topic = t.get("topic") if isinstance(t, dict) else str(t)
+            count = int(t.get("count", 1)) if isinstance(t, dict) else 1
+            if topic:
+                topic_counts[topic] = topic_counts.get(topic, 0) + count
+
+    topics = [
+        {"topic": topic, "count": count}
+        for topic, count in sorted(topic_counts.items(), key=lambda x: -x[1])
+    ][:20]
+
+    # Hashtags from raw comment text (fast regex, no AI)
     posts = (await db.scalars(select(Post).where(Post.campaign_id == campaign_id))).all()
     post_ids = [p.id for p in posts]
-    if not post_ids:
-        return {"topics": [], "hashtags": []}
+    texts: list = []
+    if post_ids:
+        comments = (await db.scalars(
+            select(Comment).where(Comment.post_id.in_(post_ids))
+        )).all()
+        texts = [c.raw_text for c in comments if c.raw_text]
 
-    comments = (await db.scalars(
-        select(Comment).where(Comment.post_id.in_(post_ids))
-    )).all()
-    texts = [c.arabized_text or c.raw_text for c in comments]
-
-    return {
-        "topics": extract_trending_topics(texts),
-        "hashtags": extract_hashtags(texts),
-    }
+    return {"topics": topics, "hashtags": extract_hashtags(texts)}

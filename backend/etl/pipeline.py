@@ -1,5 +1,6 @@
 """
-Full ETL pipeline: JSONL → cleaned comments → arabized → stored in DB.
+Full ETL pipeline: JSONL → cleaned comments → stored in DB.
+(Arabizi transformer removed — pipeline works directly with raw/cleaned text.)
 """
 import logging
 from pathlib import Path
@@ -11,7 +12,6 @@ from sqlalchemy import select
 from app.models.comment import Comment
 from app.models.post import Post
 from etl.cleaners import CLEANERS
-from etl.transformers.arabizi_transformer import ArabiziTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 class ETLPipeline:
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.transformer = ArabiziTransformer()
 
     async def run(self, post_id: int, jsonl_path: Path, platform: str) -> int:
         """Run full pipeline for a scraped post. Returns number of comments stored."""
@@ -34,11 +33,8 @@ class ETLPipeline:
         if not raw_comments:
             return 0
 
-        texts = [c["raw_text"] for c in raw_comments]
-        arabized = self.transformer.transform_batch(texts)
-
         stored = 0
-        for raw, arab in zip(raw_comments, arabized):
+        for raw in raw_comments:
             existing = await self.db.scalar(
                 select(Comment).where(
                     Comment.post_id == post_id,
@@ -54,8 +50,8 @@ class ETLPipeline:
                 author=raw.get("author", ""),
                 raw_text=raw["raw_text"],
                 cleaned_text=raw["raw_text"],
-                arabized_text=arab if not self.transformer.is_ignored(arab) else None,
-                language="arabizi" if arab and not self.transformer.is_ignored(arab) else "foreign",
+                arabized_text=None,
+                language="raw",
                 likes=raw.get("likes", 0),
             )
             self.db.add(comment)

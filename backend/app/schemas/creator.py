@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, List, Any
 from datetime import datetime
 
@@ -8,6 +8,10 @@ class CreatorCreate(BaseModel):
     platform: str          # instagram | tiktok | youtube | facebook
     campaign_id: Optional[int] = None
     profile_url: Optional[str] = None
+
+
+class CreatorUpdate(BaseModel):
+    campaign_id: Optional[int] = None
 
 
 class CreatorOut(BaseModel):
@@ -28,10 +32,15 @@ class CreatorOut(BaseModel):
     negative_pct: float
     neutral_pct: float
     avg_sentiment_score: float
-    top_topics: List[Any]
+    top_topics: List[Any] = []
     audience_mood: Optional[str]
     campaign_id: Optional[int]
     created_at: datetime
+
+    @field_validator("top_topics", mode="before")
+    @classmethod
+    def _coerce_topics(cls, v: Any) -> list:
+        return v if isinstance(v, list) else []
 
     class Config:
         from_attributes = True

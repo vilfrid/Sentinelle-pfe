@@ -4,7 +4,7 @@ import { getCampaigns } from "../services/api";
 import axios from "axios";
 
 type Comment = {
-  id: number; author: string; raw_text: string; arabized_text?: string;
+  id: number; author: string; raw_text: string;
   sentiment?: string; sentiment_score?: number; language?: string; likes: number;
 };
 
@@ -84,9 +84,6 @@ export default function Comments() {
                     )}
                   </div>
                   <p className="text-sm text-gray-200">{c.raw_text}</p>
-                  {c.arabized_text && (
-                    <p className="text-sm text-brand-300 font-arabic" dir="rtl">{c.arabized_text}</p>
-                  )}
                 </div>
                 <div className="text-right shrink-0">
                   {c.sentiment_score !== undefined && (

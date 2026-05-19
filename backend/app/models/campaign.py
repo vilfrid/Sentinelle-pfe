@@ -14,6 +14,7 @@ class Campaign(Base):
     keywords = Column(JSON, default=list)   # tracked keywords/hashtags
     target_platforms = Column(JSON, default=list)
     status = Column(String(50), default="active")  # active, paused, completed
+    campaign_embedding = Column(Text)                # JSON-serialized embedding vector
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

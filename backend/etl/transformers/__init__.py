@@ -1,1 +1,1 @@
-from etl.transformers.arabizi_transformer import ArabiziTransformer
+# Transformers module — Arabizi transformer removed.

@@ -11,6 +11,8 @@ export const getCampaign  = (id: number) => api.get(`/campaigns/${id}`).then((r)
 export const createCampaign = (data: object) => api.post("/campaigns/", data).then((r) => r.data);
 export const updateCampaign = (id: number, data: object) => api.patch(`/campaigns/${id}`, data).then((r) => r.data);
 export const deleteCampaign = (id: number) => api.delete(`/campaigns/${id}`);
+export const suggestKeywords = (id: number) => api.post(`/campaigns/${id}/suggest-keywords`).then((r) => r.data);
+export const suggestNewKeywords = (data: object) => api.post("/campaigns/suggest-new", data).then((r) => r.data);
 
 // --- Creators ---
 export const getCreators       = () => api.get("/creators/").then((r) => r.data);
@@ -22,6 +24,7 @@ export const resetCreator      = (id: number) => api.post(`/creators/${id}/reset
 export const stopCreator       = (id: number) => api.post(`/creators/${id}/stop`);
 export const restartCreator    = (id: number) => api.post(`/creators/${id}/restart`).then((r) => r.data);
 export const getCreatorPosts   = (id: number) => api.get(`/creators/${id}/posts`).then((r) => r.data);
+export const updateCreator = (id: number, data: any) => api.patch(`/creators/${id}`, data).then((r) => r.data);
 export const getCreatorComments = (id: number, sentiment?: string) =>
   api.get(`/creators/${id}/comments`, { params: sentiment ? { sentiment } : {} }).then((r) => r.data);
 
@@ -42,8 +45,10 @@ export const generateReport  = (data: object) => api.post("/reports/generate", d
 export const getReport       = (id: number) => api.get(`/reports/${id}`).then((r) => r.data);
 
 // --- Matching ---
-export const matchInfluencers = (campaignId: number, topK = 10) =>
+export const matchCreators = (campaignId: number, topK = 10) =>
   api.get(`/matching/${campaignId}`, { params: { top_k: topK } }).then((r) => r.data);
+export const computeEmbeddings = () =>
+  api.post("/matching/compute-embeddings").then((r) => r.data);
 
 // --- Comments ---
 export const getComments = (campaignId: number, sentiment?: string) =>

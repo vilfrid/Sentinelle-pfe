@@ -89,10 +89,25 @@ async def discover_instagram(username_or_url: str, session_id: str = "") -> Dict
                     node = edge.get("node", {})
                     pk   = str(node.get("pk") or node.get("id", ""))
                     code = node.get("code")
-                    if pk:
-                        url = f"https://www.instagram.com/p/{code}/" if code else f"https://www.instagram.com/p/{pk}/"
-                        if not any(p["external_id"] == pk for p in posts):
-                            posts.append({"url": url, "external_id": pk})
+                    if not pk:
+                        continue
+                    url = f"https://www.instagram.com/p/{code}/" if code else f"https://www.instagram.com/p/{pk}/"
+                    if any(p["external_id"] == pk for p in posts):
+                        continue
+
+                    caption_edges = node.get("edge_media_to_caption", {}).get("edges", [])
+                    caption = caption_edges[0].get("node", {}).get("text", "") if caption_edges else ""
+
+                    posts.append({
+                        "url": url,
+                        "external_id": pk,
+                        "likes": node.get("like_count") or node.get("edge_liked_by", {}).get("count", 0) or 0,
+                        "views": node.get("video_view_count") or node.get("play_count") or 0,
+                        "shares": 0,
+                        "comment_count": node.get("edge_media_to_comment", {}).get("count", 0) or 0,
+                        "caption": caption[:500],
+                        "posted_at": node.get("taken_at_timestamp"),
+                    })
             except Exception:
                 pass
 
@@ -168,9 +183,16 @@ async def discover_tiktok(username_or_url: str) -> List[Dict]:
                     for item in items:
                         aweme_id = item.get("id") or item.get("aweme_id")
                         if aweme_id and not any(p["external_id"] == str(aweme_id) for p in posts):
+                            stats = item.get("stats", {})
                             posts.append({
                                 "url": f"https://www.tiktok.com/@{username}/video/{aweme_id}",
                                 "external_id": str(aweme_id),
+                                "likes": stats.get("diggCount", 0) or 0,
+                                "views": stats.get("playCount", 0) or 0,
+                                "shares": stats.get("shareCount", 0) or 0,
+                                "comment_count": stats.get("commentCount", 0) or 0,
+                                "caption": (item.get("desc", "") or "")[:500],
+                                "posted_at": item.get("createTime"),
                             })
                 except Exception as exc:
                     logger.warning("TikTok: failed to parse item_list response: %s", exc)

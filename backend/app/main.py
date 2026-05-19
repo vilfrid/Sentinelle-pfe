@@ -42,3 +42,19 @@ app.include_router(pipeline.router,   prefix="/api/pipeline",   tags=["pipeline"
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "Sentinelle API v2"}
+
+
+@app.get("/api/debug/gemini")
+async def debug_gemini():
+    """Quick test — call from browser or curl to diagnose Gemini API issues."""
+    import google.generativeai as genai
+    key = settings.GOOGLE_API_KEY
+    if not key:
+        return {"ok": False, "error": "GOOGLE_API_KEY is empty — check your .env file"}
+    try:
+        genai.configure(api_key=key)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        resp = model.generate_content("Reply with just the word: ok")
+        return {"ok": True, "key_prefix": key[:8] + "...", "response": resp.text.strip()}
+    except Exception as exc:
+        return {"ok": False, "key_prefix": key[:8] + "...", "error": str(exc)}

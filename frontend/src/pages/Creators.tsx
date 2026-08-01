@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { getCreators, addCreator, deleteCreator, refreshCreator, resetCreator, stopCreator, restartCreator, getCampaigns } from "../services/api";
-import { Plus, RefreshCw, Trash2, ChevronRight, Loader, CheckCircle, AlertCircle, Search, Square, RotateCcw } from "lucide-react";
+import { getCreators, addCreator, deleteCreator, refreshCreator, resetCreator, stopCreator, restartCreator, finalizeCreator, getCampaigns } from "../services/api";
+import { Plus, RefreshCw, Trash2, ChevronRight, Loader, CheckCircle, AlertCircle, Search, Square, RotateCcw, CheckSquare } from "lucide-react";
 import { clsx } from "clsx";
 
-const PLATFORMS = ["instagram", "tiktok", "youtube"];
+const PLATFORMS = ["instagram", "youtube"];
 
 type Creator = {
   id: number; username: string; display_name?: string; platform_id: number;
@@ -28,6 +28,27 @@ const tier = (n: number) => {
   if (n > 0)          return { label: "Nano",  cls: "text-green-400 bg-green-500/10 border-green-500/20" };
   return null;
 };
+
+function CreatorAvatar({ url, username }: { url?: string; username: string }) {
+  const [broken, setBroken] = useState(false);
+  const proxied = url
+    ? url.startsWith("/")
+      ? url
+      : `/api/proxy/image?url=${encodeURIComponent(url)}`
+    : null;
+  if (proxied && !broken) {
+    return (
+      <img src={proxied} alt={username}
+        className="w-11 h-11 rounded-full object-cover shrink-0 border border-white/10"
+        onError={() => setBroken(true)} />
+    );
+  }
+  return (
+    <div className="w-11 h-11 rounded-full bg-brand-600/20 flex items-center justify-center text-brand-400 font-bold text-lg shrink-0">
+      {username[0]?.toUpperCase()}
+    </div>
+  );
+}
 
 const StatusBadge = ({ status }: { status: string }) => {
   const map: Record<string, { color: string; icon: React.ReactNode }> = {
@@ -112,6 +133,12 @@ export default function Creators() {
   const stop = useMutation({
     mutationFn: (id: number) => stopCreator(id),
     onMutate: (id) => patchCreator(id, { status: "idle" }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["creators"] }),
+  });
+
+  const finalize = useMutation({
+    mutationFn: (id: number) => finalizeCreator(id),
+    onMutate: (id) => patchCreator(id, { status: "processing" }),
     onSettled: () => qc.invalidateQueries({ queryKey: ["creators"] }),
   });
 
@@ -207,15 +234,7 @@ export default function Creators() {
             <div key={c.id} className="card hover:border-white/10 transition-colors cursor-pointer group"
               onClick={() => navigate(`/creators/${c.id}`)}>
               <div className="flex items-center gap-4">
-                {/* Avatar */}
-                {c.avatar_url ? (
-                  <img src={c.avatar_url} alt={c.username}
-                    className="w-11 h-11 rounded-full object-cover shrink-0 border border-white/10" />
-                ) : (
-                  <div className="w-11 h-11 rounded-full bg-brand-600/20 flex items-center justify-center text-brand-400 font-bold text-lg shrink-0">
-                    {c.username[0]?.toUpperCase()}
-                  </div>
-                )}
+                <CreatorAvatar url={c.avatar_url} username={c.username} />
 
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
@@ -256,11 +275,18 @@ export default function Creators() {
                 {/* Actions */}
                 <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                   {["discovering", "scraping", "processing"].includes(c.status) ? (
-                    <button onClick={() => stop.mutate(c.id)}
-                      className="p-2 text-yellow-500 hover:text-yellow-300 transition-colors rounded-lg hover:bg-yellow-500/10"
-                      title="Stop pipeline">
-                      <Square size={15} />
-                    </button>
+                    <>
+                      <button onClick={() => finalize.mutate(c.id)}
+                        className="p-2 text-green-500 hover:text-green-300 transition-colors rounded-lg hover:bg-green-500/10"
+                        title="End scraping and save collected data">
+                        <CheckSquare size={15} />
+                      </button>
+                      <button onClick={() => stop.mutate(c.id)}
+                        className="p-2 text-yellow-500 hover:text-yellow-300 transition-colors rounded-lg hover:bg-yellow-500/10"
+                        title="Stop pipeline (discard in-flight)">
+                        <Square size={15} />
+                      </button>
+                    </>
                   ) : (
                     <>
                       <button onClick={() => refresh.mutate(c.id)}

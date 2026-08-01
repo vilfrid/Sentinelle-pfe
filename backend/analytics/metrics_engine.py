@@ -31,6 +31,14 @@ class MetricsEngine:
             )
         )).all()
 
+        # Fallback: nothing scraped inside the period window (data older than
+        # the selected period) — compute over ALL posts of the campaign instead
+        # of returning empty zeros.
+        if not posts:
+            posts = (await self.db.scalars(
+                select(Post).where(Post.campaign_id == campaign_id)
+            )).all()
+
         post_ids = [p.id for p in posts]
         comments: List[Comment] = []
         if post_ids:
@@ -48,9 +56,9 @@ class MetricsEngine:
             if total > 0 else 0.0
         )
 
-        total_likes = sum(p.likes for p in posts)
-        total_views = sum(p.views for p in posts)
-        total_shares = sum(p.shares for p in posts)
+        total_likes = sum(p.likes or 0 for p in posts)
+        total_views = sum(p.views or 0 for p in posts)
+        total_shares = sum(p.shares or 0 for p in posts)
         total_interactions = total_likes + len(comments) + total_shares
 
         if total_views > 0:

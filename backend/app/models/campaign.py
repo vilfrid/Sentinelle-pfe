@@ -15,8 +15,8 @@ class Campaign(Base):
     target_platforms = Column(JSON, default=list)
     status = Column(String(50), default="active")  # active, paused, completed
     campaign_embedding = Column(Text)                # JSON-serialized embedding vector
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.utcnow())
+    updated_at = Column(DateTime, default=lambda: datetime.utcnow(), onupdate=lambda: datetime.utcnow())
 
     posts = relationship("Post", back_populates="campaign")
     metrics = relationship("Metric", back_populates="campaign")

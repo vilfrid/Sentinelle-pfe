@@ -34,7 +34,7 @@ class _YTLogger:
 class YouTubeScraper(BaseScraper):
     platform = "youtube"
 
-    async def scrape(self, url: str, max_comments: int = 200, **kwargs) -> Path:
+    async def scrape(self, url: str, max_comments: int = 10_000, **kwargs) -> Path:
         m = _VIDEO_RE.search(url)
         video_id = m.group(1) if m else "unknown"
         out_path = self._get_output_path(video_id)
@@ -59,6 +59,10 @@ class YouTubeScraper(BaseScraper):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 return ydl.extract_info(url, download=False)
 
+        # Clear stale data from any previous partial run so we never append duplicates
+        if out_path.exists():
+            out_path.unlink()
+
         loop = asyncio.get_running_loop()
         try:
             info = await loop.run_in_executor(None, _extract)
@@ -71,22 +75,30 @@ class YouTubeScraper(BaseScraper):
             return out_path
 
         # Save video-level metadata as the first record (type=meta)
+        # view_count may be None for live streams; fall back to concurrent_view_count
+        _view_count = info.get("view_count") or info.get("concurrent_view_count")
         meta = {
-            "__type":               "meta",
-            "view_count":           info.get("view_count"),
-            "like_count":           info.get("like_count"),
-            "comment_count":        info.get("comment_count"),
-            "duration":             info.get("duration"),
-            "description":          (info.get("description") or "")[:1000],
-            "upload_date":          info.get("upload_date"),        # "YYYYMMDD"
-            "channel":              info.get("channel"),
-            "channel_id":           info.get("channel_id"),
-            "uploader_id":          info.get("uploader_id"),        # @handle
+            "__type":                 "meta",
+            "view_count":             _view_count,
+            "like_count":             info.get("like_count"),
+            "comment_count":          info.get("comment_count"),
+            "duration":               info.get("duration"),
+            "title":                  info.get("title") or "",
+            "description":            info.get("description") or "",
+            "upload_date":            info.get("upload_date"),        # "YYYYMMDD"
+            "channel":                info.get("channel"),
+            "channel_id":             info.get("channel_id"),
+            "channel_url":            info.get("channel_url", ""),
+            "uploader_id":            info.get("uploader_id"),        # @handle
             "channel_follower_count": info.get("channel_follower_count"),
-            "thumbnail":            info.get("thumbnail"),
-            "tags":                 (info.get("tags") or [])[:20],
-            "categories":           info.get("categories") or [],
+            "channel_description":    (info.get("channel") or "") and "",  # placeholder; populated below
+            "thumbnail":              info.get("thumbnail"),           # video thumbnail
+            "tags":                   info.get("tags") or [],
+            "categories":             info.get("categories") or [],
         }
+        # channel_description lives on the channel object, not the video object in yt-dlp.
+        # Best we can do from a single video fetch: use the uploader description if present.
+        meta["channel_description"] = (info.get("uploader_description") or "").strip()
         self._append_record(out_path, meta, video_id)
         logger.info(
             "YouTube %s: views=%s likes=%s subscribers=%s",

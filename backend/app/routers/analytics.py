@@ -28,7 +28,7 @@ async def compute_metrics(
     period: str = Query("weekly", enum=["daily", "weekly", "monthly"]),
     db: AsyncSession = Depends(get_db),
 ):
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     delta = {"daily": timedelta(days=1), "weekly": timedelta(weeks=1), "monthly": timedelta(days=30)}
     start = now - delta[period]
     engine = MetricsEngine(db)

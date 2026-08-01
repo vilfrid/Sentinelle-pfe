@@ -1,7 +1,8 @@
+import asyncio
 import json
 import logging
 import re
-import google.generativeai as genai
+from functools import partial
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -23,19 +24,19 @@ def generate_keywords(
     trending_topics: List[str] | None = None,
     target_platforms: List[str] | None = None,
 ) -> List[str]:
-    try:
-        genai.configure(api_key=settings.GOOGLE_API_KEY)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+    if not settings.GROQ_API_KEY:
+        logger.warning("generate_keywords: GROQ_API_KEY is not set — skipping AI keyword generation")
+        return []
 
-        topics_line = ""
-        if trending_topics:
-            topics_line = f"Already-detected trending topics in comments: {', '.join(trending_topics[:15])}\n"
+    topics_line = ""
+    if trending_topics:
+        topics_line = f"Already-detected trending topics in comments: {', '.join(trending_topics[:15])}\n"
 
-        platforms_line = ""
-        if target_platforms:
-            platforms_line = f"Target platforms: {', '.join(target_platforms)}\n"
+    platforms_line = ""
+    if target_platforms:
+        platforms_line = f"Target platforms: {', '.join(target_platforms)}\n"
 
-        prompt = f"""You are a social media marketing expert specializing in the Tunisian and North-African market.
+    prompt = f"""You are a social media marketing expert specializing in the Tunisian and North-African market.
 Generate 8 to 12 highly relevant tracking keywords and hashtags for this brand campaign.
 
 Campaign name: {name}
@@ -50,20 +51,38 @@ Rules:
 
 Example output: ["sneakers", "chaussures", "كوتشي", "#Nike", "collection2025", "mode"]
 """
-        response = model.generate_content(prompt)
-        text = re.sub(r"```(?:json)?\s*|\s*```", "", response.text).strip()
-        parsed = json.loads(text)
-        # Gemini sometimes wraps the array in an object — unwrap it
-        if isinstance(parsed, dict):
-            for key in ("keywords", "tags", "items", "results"):
-                if key in parsed and isinstance(parsed[key], list):
-                    parsed = parsed[key]
-                    break
-        if isinstance(parsed, list) and parsed:
-            return [str(k).strip() for k in parsed if k]
-        logger.warning("generate_keywords: unexpected response shape: %s", str(parsed)[:200])
-    except Exception as e:
-        logger.error("generate_keywords failed: %s", e)
+
+    import time as _time
+    from groq import Groq
+    groq_client = Groq(api_key=settings.GROQ_API_KEY)
+
+    for attempt in range(2):
+        try:
+            response = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.4,
+                max_tokens=512,
+            )
+            raw = response.choices[0].message.content or ""
+            text = re.sub(r"```(?:json)?\s*|\s*```", "", raw).strip()
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                for k in ("keywords", "tags", "items", "results"):
+                    if k in parsed and isinstance(parsed[k], list):
+                        parsed = parsed[k]
+                        break
+            if isinstance(parsed, list) and parsed:
+                return [str(k).strip() for k in parsed if k]
+            logger.warning("generate_keywords: unexpected response shape — raw: %s", raw[:300])
+        except Exception as exc:
+            err = str(exc)
+            if "429" in err or "rate" in err.lower():
+                wait = 10 * (attempt + 1)
+                logger.warning("generate_keywords: rate limited — waiting %ds: %s", wait, err)
+                _time.sleep(wait)
+            else:
+                logger.error("generate_keywords failed (attempt %d/2): %s", attempt + 1, err)
     return []
 
 
@@ -74,12 +93,14 @@ async def suggest_new_keywords(payload: dict):
     Accepts {name, brand, description, target_platforms} in the body.
     Returns {"keywords": [...]} without persisting anything.
     """
-    kws = generate_keywords(
+    loop = asyncio.get_running_loop()
+    kws = await loop.run_in_executor(None, partial(
+        generate_keywords,
         name=payload.get("name", ""),
         brand=payload.get("brand", ""),
         description=payload.get("description", ""),
         target_platforms=payload.get("target_platforms") or None,
-    )
+    ))
     return {"keywords": kws}
 
 
@@ -94,12 +115,14 @@ async def create_campaign(payload: CampaignCreate, db: AsyncSession = Depends(ge
     data = payload.model_dump()
 
     if not data.get("keywords") and data.get("brand"):
-        auto_kws = generate_keywords(
+        loop = asyncio.get_running_loop()
+        auto_kws = await loop.run_in_executor(None, partial(
+            generate_keywords,
             name=data.get("name", ""),
             brand=data["brand"],
             description=data.get("description", ""),
             target_platforms=data.get("target_platforms"),
-        )
+        ))
         if auto_kws:
             data["keywords"] = auto_kws
 
@@ -133,7 +156,7 @@ async def update_campaign(campaign_id: int, payload: CampaignUpdate, db: AsyncSe
 @router.post("/{campaign_id}/suggest-keywords")
 async def suggest_keywords(campaign_id: int, db: AsyncSession = Depends(get_db)):
     """
-    Use Gemini to suggest keywords for an existing campaign.
+    Use Groq (Llama 3.3 70B) to suggest keywords for an existing campaign.
     Uses already-stored creator top_topics (no extra AI call) as context.
     Does NOT save automatically — call PATCH /{id} to apply.
     """
@@ -142,7 +165,7 @@ async def suggest_keywords(campaign_id: int, db: AsyncSession = Depends(get_db))
         raise HTTPException(404, "Campaign not found")
 
     # Collect already-computed topics from creators linked to this campaign
-    # (stored by the pipeline in creator.top_topics — no extra Gemini call needed)
+    # (stored by the pipeline in creator.top_topics — no extra AI call needed)
     trending: List[str] = []
     try:
         from app.models.creator import Creator as CreatorModel
@@ -163,13 +186,15 @@ async def suggest_keywords(campaign_id: int, db: AsyncSession = Depends(get_db))
     except Exception as exc:
         logger.warning("Could not read creator topics for keyword suggestion: %s", exc)
 
-    keywords = generate_keywords(
+    loop = asyncio.get_running_loop()
+    keywords = await loop.run_in_executor(None, partial(
+        generate_keywords,
         name=campaign.name,
         brand=campaign.brand,
         description=campaign.description or "",
         trending_topics=trending or None,
         target_platforms=campaign.target_platforms or None,
-    )
+    ))
 
     return {"keywords": keywords, "trending_topics_used": trending}
 

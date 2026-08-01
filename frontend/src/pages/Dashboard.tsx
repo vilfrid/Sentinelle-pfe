@@ -2,8 +2,24 @@ import { useQuery } from "@tanstack/react-query";
 import { getOverview } from "../services/api";
 import { MessageSquare, Megaphone, TrendingUp, AlertTriangle } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
+import { useChartTheme } from "../contexts/ThemeContext";
 
 const COLORS = { positive: "#22c55e", negative: "#ef4444", neutral: "#6b7280" };
+
+const RADIAN = Math.PI / 180;
+function renderSliceLabel({ cx, cy, midAngle, innerRadius, outerRadius, value, percent }: {
+  cx: number; cy: number; midAngle: number; innerRadius: number; outerRadius: number; value: number; percent: number;
+}) {
+  if (percent < 0.04) return null;
+  const r = (innerRadius + outerRadius) / 2;
+  const x = cx + r * Math.cos(-midAngle * RADIAN);
+  const y = cy + r * Math.sin(-midAngle * RADIAN);
+  return (
+    <text x={x} y={y} fill="#fff" textAnchor="middle" dominantBaseline="central" fontSize={13} fontWeight={600}>
+      {value.toLocaleString()}
+    </text>
+  );
+}
 
 function StatCard({ label, value, icon: Icon, color }: { label: string; value: number; icon: React.ElementType; color: string }) {
   return (
@@ -21,6 +37,7 @@ function StatCard({ label, value, icon: Icon, color }: { label: string; value: n
 
 export default function Dashboard() {
   const { data, isLoading } = useQuery({ queryKey: ["overview"], queryFn: getOverview });
+  const chart = useChartTheme();
 
   if (isLoading) return <div className="text-gray-400 text-sm">Loading dashboard...</div>;
 
@@ -53,12 +70,12 @@ export default function Dashboard() {
           <h2 className="text-base font-semibold mb-4">Sentiment Breakdown</h2>
           <ResponsiveContainer width="100%" height={240}>
             <PieChart>
-              <Pie data={sentimentData} cx="50%" cy="50%" innerRadius={60} outerRadius={100} dataKey="value" label>
+              <Pie data={sentimentData} cx="50%" cy="50%" innerRadius={60} outerRadius={100} dataKey="value" label={renderSliceLabel} labelLine={false}>
                 {sentimentData.map((entry) => (
                   <Cell key={entry.name} fill={COLORS[entry.name.toLowerCase() as keyof typeof COLORS]} />
                 ))}
               </Pie>
-              <Tooltip formatter={(v: number) => v.toLocaleString()} />
+              <Tooltip formatter={(v: number) => v.toLocaleString()} contentStyle={chart.tooltip} />
               <Legend />
             </PieChart>
           </ResponsiveContainer>

@@ -19,9 +19,14 @@ class Post(Base):
     views = Column(BigInteger, default=0)
     shares = Column(BigInteger, default=0)
     comment_count = Column(Integer, default=0)
-    scraped_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    scraped_at = Column(DateTime, default=lambda: datetime.utcnow())
     posted_at = Column(DateTime)
-    raw_data_path = Column(String(500))  # path to .jsonl file
+    tags = Column(Text, default="[]")         # JSON array of hashtag strings
+    media_type = Column(Integer, default=1)   # 1=Photo, 2=Video/Reel, 8=Carousel
+    is_collab = Column(Integer, default=0)    # 1 if post has co-authors
+    counts_disabled = Column(Integer, default=0)  # 1 if creator hid like/view counts
+    thumbnail_url = Column(Text, default="")  # cover image URL (CDN, may expire)
+    raw_data_path = Column(String(500))
     etl_status = Column(String(50), default="pending")  # pending, cleaned, transformed, analyzed
 
     platform = relationship("Platform", back_populates="posts")

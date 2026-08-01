@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Float
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 from app.database import Base
@@ -6,6 +6,13 @@ from app.database import Base
 
 class Comment(Base):
     __tablename__ = "comments"
+
+    # --- ADDED THIS BLOCK ---
+    # This forces the database to reject any duplicate comments for a given post
+    __table_args__ = (
+        UniqueConstraint('post_id', 'external_id', name='uq_post_comment_external_id'),
+    )
+    # ------------------------
 
     id = Column(Integer, primary_key=True, index=True)
     post_id = Column(Integer, ForeignKey("posts.id"), nullable=False)
@@ -15,8 +22,7 @@ class Comment(Base):
     # Text pipeline stages
     raw_text = Column(Text, nullable=False)            # original scraped text
     cleaned_text = Column(Text)                        # after cleaning
-    arabized_text = Column(Text)                       # after Arabizi → Arabic
-    language = Column(String(20))                      # detected: ar, fr, en, arabizi, mixed
+    language = Column(String(20))                      # ar, fr, en, arabizi, mixed (multilingual model handles all)
 
     # Sentiment (populated by AI engine)
     sentiment = Column(String(20))                     # positive, negative, neutral
@@ -26,7 +32,7 @@ class Comment(Base):
 
     likes = Column(Integer, default=0)
     posted_at = Column(DateTime)
-    scraped_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    scraped_at = Column(DateTime, default=lambda: datetime.utcnow())
     analyzed_at = Column(DateTime)
 
     post = relationship("Post", back_populates="comments")

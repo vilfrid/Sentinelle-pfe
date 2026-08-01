@@ -1,8 +1,15 @@
+# Trash — old temp scripts, migration one-offs, diagram work files
+trash/
+
 # Docs
 CAHIER DES CHARGES.docx
 DEMARRAGE.md
 README.md
 WORKFLOW.md
+firas ben ammar final (1).pdf
+
+# PFE Report (not part of the codebase)
+reportpfe/
 
 # Test / prototype scripts (contain hardcoded tokens)
 test/
@@ -27,11 +34,18 @@ env/
 # Database
 *.db
 *.sqlite3
+*.db.bak
+*.db.*.bak
+backups/
 
 # Data (scraped / processed)
 data/raw/
 data/processed/
 data/final/
+data/tiktok_session/
+
+# Claude Code worktrees
+.claude/worktrees/
 
 # Frontend
 frontend/node_modules/

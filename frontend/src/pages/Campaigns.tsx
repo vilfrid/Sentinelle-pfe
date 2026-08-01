@@ -4,14 +4,28 @@ import {
   getCampaigns, createCampaign, deleteCampaign, addCreator, getCreators,
   updateCreator, updateCampaign, suggestKeywords, suggestNewKeywords,
 } from "../services/api";
-import { Plus, Trash2, Tag, Sparkles, Loader } from "lucide-react";
+import { Plus, Trash2, Tag, Sparkles, Loader, ChevronDown, ChevronRight, Users, MessageSquare, Eye } from "lucide-react";
+import { Link } from "react-router-dom";
 
 type Campaign = {
   id: number; name: string; brand: string; status: string;
   keywords: string[]; target_platforms: string[]; created_at: string;
 };
 
-const PLATFORMS = ["instagram", "tiktok", "youtube", "facebook"];
+const PLATFORMS = ["instagram", "youtube"];
+
+const MOOD_COLOR: Record<string, string> = {
+  happy:   "text-green-400",
+  mixed:   "text-yellow-400",
+  angry:   "text-red-400",
+  neutral: "text-gray-400",
+};
+
+const fmtNum = (n: number) => {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return `${n}`;
+};
 
 export default function Campaigns() {
   const qc = useQueryClient();
@@ -26,6 +40,9 @@ export default function Campaigns() {
   // Per-campaign keyword refresh state
   const [refreshingId, setRefreshingId] = useState<number | null>(null);
   const [refreshResult, setRefreshResult] = useState<{ id: number; keywords: string[] } | null>(null);
+
+  // Expanded campaign (click its name to show influencer details)
+  const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const create = useMutation({
     mutationFn: () => createCampaign({
@@ -101,7 +118,7 @@ export default function Campaigns() {
       });
       const kws = data.keywords || [];
       if (!kws.length) {
-        alert("AI returned no keywords. Check that GOOGLE_API_KEY is set and Gemini is reachable.");
+        alert("AI returned no keywords. Check that GROQ_API_KEY is set and the Groq API is reachable.");
       }
       setFormSuggestions(kws);
     } catch {
@@ -118,7 +135,7 @@ export default function Campaigns() {
       const data = await suggestKeywords(campaignId);
       const kws = data.keywords || [];
       if (!kws.length) {
-        alert("AI returned no keywords. Check that GOOGLE_API_KEY is set and Gemini is reachable.");
+        alert("AI returned no keywords. Check that GROQ_API_KEY is set and the Groq API is reachable.");
       } else {
         setRefreshResult({ id: campaignId, keywords: kws });
       }
@@ -180,7 +197,7 @@ export default function Campaigns() {
               <button
                 onClick={handleSuggestForForm}
                 disabled={!form.brand || formSuggesting}
-                className="flex items-center gap-1.5 text-xs text-purple-400 hover:text-purple-300 disabled:opacity-40 transition-colors"
+                className="flex items-center gap-1.5 text-xs text-purple-600 hover:text-purple-700 dark:text-purple-400 dark:hover:text-purple-300 disabled:opacity-40 transition-colors"
               >
                 {formSuggesting
                   ? <><Loader size={11} className="animate-spin" /> Suggesting…</>
@@ -204,8 +221,8 @@ export default function Campaigns() {
                       onClick={() => toggleFormChip(kw)}
                       className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border transition-colors ${
                         activeFormKws.has(kw)
-                          ? "bg-purple-600/30 border-purple-500/60 text-purple-300"
-                          : "bg-dark-700 border-white/10 text-gray-400 hover:border-purple-500/40 hover:text-purple-300"
+                          ? "bg-purple-600/20 border-purple-500/60 text-purple-700 dark:bg-purple-600/30 dark:text-purple-300"
+                          : "bg-dark-700 border-white/10 text-gray-400 hover:border-purple-500/40 hover:text-purple-600 dark:hover:text-purple-300"
                       }`}
                     >
                       <Sparkles size={9} /> {kw}
@@ -266,9 +283,20 @@ export default function Campaigns() {
               <div className="flex items-start justify-between">
                 <div className="space-y-1">
                   <div className="flex items-center gap-3">
-                    <h3 className="font-semibold">{c.name}</h3>
+                    <button
+                      onClick={() => setExpandedId(expandedId === c.id ? null : c.id)}
+                      className="flex items-center gap-1.5 font-semibold hover:text-brand-400 transition-colors"
+                      title="Click to see influencers in this campaign"
+                    >
+                      {expandedId === c.id ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                      {c.name}
+                    </button>
                     <span className={`text-xs px-2 py-0.5 rounded-full ${c.status === "active" ? "bg-green-500/20 text-green-400" : "bg-gray-500/20 text-gray-400"}`}>
                       {c.status}
+                    </span>
+                    <span className="text-xs text-gray-500 flex items-center gap-1">
+                      <Users size={11} />
+                      {creators.filter((cr: any) => cr.campaign_id === c.id).length} influencer(s)
                     </span>
                   </div>
                   <p className="text-sm text-gray-400">{c.brand}</p>
@@ -278,6 +306,61 @@ export default function Campaigns() {
                 </button>
               </div>
 
+              {/* Expanded: influencers in this campaign */}
+              {expandedId === c.id && (
+                <div className="bg-dark-700/40 border border-white/5 rounded-lg p-3 space-y-2">
+                  <p className="text-xs text-gray-500 uppercase tracking-wide font-medium">Influencers in this campaign</p>
+                  {creators.filter((cr: any) => cr.campaign_id === c.id).length === 0 ? (
+                    <p className="text-sm text-gray-500">No influencers yet — add one below.</p>
+                  ) : (
+                    creators
+                      .filter((cr: any) => cr.campaign_id === c.id)
+                      .map((cr: any) => (
+                        <Link
+                          key={cr.id}
+                          to={`/creators/${cr.id}`}
+                          className="flex items-center gap-3 p-2 rounded-lg hover:bg-dark-700 transition-colors"
+                        >
+                          {cr.avatar_url ? (
+                            <img src={cr.avatar_url} alt={cr.username} className="w-9 h-9 rounded-full object-cover shrink-0" />
+                          ) : (
+                            <div className="w-9 h-9 rounded-full bg-brand-600/20 text-brand-400 flex items-center justify-center text-xs font-bold shrink-0">
+                              {cr.username.slice(0, 2).toUpperCase()}
+                            </div>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium truncate">
+                              @{cr.username}
+                              {cr.display_name && <span className="text-gray-500 font-normal ml-2 text-xs">{cr.display_name}</span>}
+                            </p>
+                            <div className="flex items-center gap-3 text-xs text-gray-500 mt-0.5">
+                              <span className="flex items-center gap-1"><Users size={10} /> {fmtNum(cr.follower_count ?? 0)} followers</span>
+                              <span className="flex items-center gap-1"><MessageSquare size={10} /> {fmtNum(cr.total_comments ?? 0)} comments</span>
+                              {(cr.avg_views ?? 0) > 0 && (
+                                <span className="flex items-center gap-1"><Eye size={10} /> {fmtNum(cr.avg_views)} avg views</span>
+                              )}
+                            </div>
+                          </div>
+                          {/* Sentiment mini-bar */}
+                          <div className="hidden sm:flex flex-col items-end gap-1 w-36 shrink-0">
+                            <div className="flex rounded-full overflow-hidden h-1.5 w-full">
+                              <div className="bg-green-500" style={{ width: `${cr.positive_pct ?? 0}%` }} />
+                              <div className="bg-gray-600"  style={{ width: `${cr.neutral_pct ?? 0}%` }} />
+                              <div className="bg-red-500"   style={{ width: `${cr.negative_pct ?? 0}%` }} />
+                            </div>
+                            <span className="text-[10px] text-gray-500">
+                              {Math.round(cr.positive_pct ?? 0)}% pos · {Math.round(cr.negative_pct ?? 0)}% neg
+                            </span>
+                          </div>
+                          <span className={`text-xs capitalize w-14 text-right shrink-0 ${MOOD_COLOR[cr.audience_mood] ?? "text-gray-500"}`}>
+                            {cr.audience_mood ?? "—"}
+                          </span>
+                        </Link>
+                      ))
+                  )}
+                </div>
+              )}
+
               {/* Keywords row */}
               <div>
                 <div className="flex items-center gap-2 mb-1.5">
@@ -286,7 +369,7 @@ export default function Campaigns() {
                     onClick={() => handleRefreshExisting(c.id)}
                     disabled={refreshingId === c.id}
                     title="Regenerate keywords with AI"
-                    className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 disabled:opacity-40 transition-colors"
+                    className="flex items-center gap-1 text-xs text-purple-600 hover:text-purple-700 dark:text-purple-400 dark:hover:text-purple-300 disabled:opacity-40 transition-colors"
                   >
                     {refreshingId === c.id
                       ? <><Loader size={10} className="animate-spin" /> Thinking…</>
@@ -308,10 +391,10 @@ export default function Campaigns() {
                 {/* AI refresh suggestions for this campaign */}
                 {refreshResult?.id === c.id && (
                   <div className="mt-2 p-3 bg-purple-500/5 border border-purple-500/20 rounded-lg space-y-2">
-                    <p className="text-xs text-purple-300 font-medium">AI-suggested keywords — click Apply to save:</p>
+                    <p className="text-xs text-purple-700 dark:text-purple-300 font-medium">AI-suggested keywords — click Apply to save:</p>
                     <div className="flex flex-wrap gap-1.5">
                       {refreshResult.keywords.map((kw) => (
-                        <span key={kw} className="flex items-center gap-1 bg-purple-600/20 text-purple-300 text-xs px-2.5 py-0.5 rounded-full">
+                        <span key={kw} className="flex items-center gap-1 bg-purple-600/15 text-purple-700 dark:bg-purple-600/20 dark:text-purple-300 text-xs px-2.5 py-0.5 rounded-full">
                           <Sparkles size={9} /> {kw}
                         </span>
                       ))}
@@ -339,7 +422,7 @@ export default function Campaigns() {
               {c.target_platforms.length > 0 && (
                 <div className="flex gap-1">
                   {c.target_platforms.map((p) => (
-                    <span key={p} className="text-xs bg-brand-600/20 text-brand-400 px-2 py-0.5 rounded-full capitalize">{p}</span>
+                    <span key={p} className="text-xs bg-brand-600/15 text-brand-700 dark:bg-brand-600/20 dark:text-brand-400 px-2 py-0.5 rounded-full capitalize">{p}</span>
                   ))}
                 </div>
               )}

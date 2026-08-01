@@ -11,6 +11,22 @@ services:
       timeout: 3s
       retries: 5
 
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"   # 5433 on host: local PostgreSQL 18 already uses 5432
+    environment:
+      - POSTGRES_USER=sentinelle
+      - POSTGRES_PASSWORD=sentinelle_pg_2026
+      - POSTGRES_DB=sentinelle
+    volumes:
+      - sentinelle_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinelle -d sentinelle"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build:
       context: ./backend
@@ -23,8 +39,12 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - DATABASE_URL=postgresql+asyncpg://sentinelle:sentinelle_pg_2026@postgres:5432/sentinelle
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
@@ -38,10 +58,14 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - DATABASE_URL=postgresql+asyncpg://sentinelle:sentinelle_pg_2026@postgres:5432/sentinelle
     depends_on:
       redis:
         condition: service_healthy
-    command: celery -A workers.celery_app worker --loglevel=info --concurrency=4
+      postgres:
+        condition: service_healthy
+    command: celery -A workers.celery_app worker --loglevel=info --concurrency=8
 
   frontend:
     build:
@@ -54,6 +78,9 @@ services:
       - /app/node_modules
     environment:
       - VITE_API_URL=http://backend:8000
+    depends_on:
+      - backend
 
 volumes:
   sentinelle_data:
+  sentinelle_pgdata:

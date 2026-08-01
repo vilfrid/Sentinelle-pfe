@@ -1,12 +1,10 @@
 """
 Trending topics extraction for Arabic/Arabizi/French/English social media comments.
 
-Two extraction modes:
-  extract_topics_with_ai()   — Gemini 2.0 Flash: semantic theme clustering (primary)
-  extract_trending_topics()  — word-frequency fallback (used when AI is unavailable)
+Extraction priority:
+  1. HF Space  (HF_SPACE_URL in settings) — Qwen2.5-7B via InferenceClient, real semantic clustering
+  2. Word-freq                             — always available, no AI required
 """
-import json
-import random
 import re
 import logging
 from collections import Counter
@@ -14,9 +12,8 @@ from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-_AI_SAMPLE_SIZE = 150   # max comments sent to Gemini per call
-_AI_MODEL = "gemini-2.5-flash"
-_AI_RETRIES = 2
+_HF_TIMEOUT      = 90    # max per-batch request to topics Space (Qwen on CPU needs time)
+_HF_WARMUP_TIMEOUT = 30  # if not ready in 30s, fall back to word-freq
 
 _STOPWORDS_AR = {
     "في", "من", "على", "إلى", "عن", "مع", "هذا", "هذه", "التي", "الذي",
@@ -73,7 +70,7 @@ _STOPWORDS_MISC = {
 
 _ALL_STOPS = _STOPWORDS_AR | _STOPWORDS_EN | _STOPWORDS_FR | _STOPWORDS_MISC
 _MIN_WORD_LEN = 3
-_MIN_COUNT = 2  # ignore hapax legomena (words appearing only once)
+_MIN_COUNT = 2  # preferred minimum; relaxed to 1 for small datasets
 
 # Strip URLs and @mentions before tokenizing
 _CLEAN_RE = re.compile(r"https?://\S+|@\w+", re.IGNORECASE)
@@ -89,11 +86,19 @@ def extract_trending_topics(texts: List[str], top_n: int = 20) -> List[Dict]:
             if len(w) >= _MIN_WORD_LEN and w not in _ALL_STOPS:
                 word_counts[w] += 1
 
-    return [
+    threshold = _MIN_COUNT
+    result = [
         {"topic": word, "count": count}
         for word, count in word_counts.most_common(top_n)
-        if count >= _MIN_COUNT
+        if count >= threshold
     ]
+    # For small datasets every word may appear only once; relax the threshold.
+    if not result and word_counts:
+        result = [
+            {"topic": word, "count": count}
+            for word, count in word_counts.most_common(top_n)
+        ]
+    return result
 
 
 def extract_hashtags(texts: List[str]) -> List[Dict]:
@@ -107,86 +112,139 @@ def extract_hashtags(texts: List[str]) -> List[Dict]:
     ]
 
 
+_HF_BATCH_SIZE   = 20    # comments per request to the HF Space (smaller = faster Qwen inference)
+_HF_MAX_BATCHES  = 15    # process up to 300 comments (shuffled for representative sampling)
+_HF_MAX_CHARS    = 80    # max characters per comment (shorter = faster Qwen response)
+
+
+_OLLAMA_TOPIC_PROMPT = """\
+You are a social media analytics expert specializing in Arabic, Tunisian Arabizi, French, and English.
+Below are ALL {total} real comments from a social media creator's posts.
+
+Comments may be in Arabic script, Tunisian Arabizi (Latin-script Arabic dialect), French, English, or mixed.
+
+TASK: Identify the top {top_n} recurring THEMES.
+
+STRICT RULES:
+- Group semantically similar comments into ONE theme regardless of the language they use.
+  Example: "livraison?", "est ce qu'il y a la livraison", "نوزيرفيللا شافيك", "wen livraison" → ONE theme: "Delivery inquiries"
+- Write each theme label in English, 2-5 words, descriptive and specific
+- count = actual number of comments from these {total} that match this theme
+- NEVER copy a comment verbatim as a label
+- Merge near-duplicate themes into one
+- Only include themes that genuinely recur — skip one-off mentions
+- Return ONLY a valid JSON array, zero explanation, no markdown fences
+
+Output format exactly:
+[{{"topic": "Theme name", "count": N}}, ...]
+
+Comments:
+{numbered}
+"""
+
+
+_OLLAMA_BATCH_SIZE = 300   # comments per Ollama call
+
+
+def _try_ollama(texts: List[str], top_n: int) -> Optional[List[Dict]]:
+    """Call local Ollama in batches and merge topic counts. Returns None on total failure."""
+    import httpx
+    import json as _json
+    import random as _random
+
+    try:
+        from app.config import settings
+        ollama_url = getattr(settings, "OLLAMA_URL", "").strip().rstrip("/")
+        model = getattr(settings, "OLLAMA_MODEL", "qwen2.5:7b").strip()
+    except Exception:
+        return None
+
+    if not ollama_url:
+        return None
+
+    filtered = [t[:_HF_MAX_CHARS] for t in texts if t and t.strip()]
+    if not filtered:
+        return None
+
+    _random.shuffle(filtered)
+    batches = [
+        filtered[i:i + _OLLAMA_BATCH_SIZE]
+        for i in range(0, len(filtered), _OLLAMA_BATCH_SIZE)
+    ]
+
+    merged: Dict[str, tuple] = {}  # lowercase_key → (display_name, count)
+    success = 0
+
+    for i, batch in enumerate(batches):
+        numbered = "\n".join(f"{j+1}. {c}" for j, c in enumerate(batch))
+        prompt = _OLLAMA_TOPIC_PROMPT.format(total=len(batch), top_n=top_n, numbered=numbered)
+        try:
+            resp = httpx.post(
+                f"{ollama_url}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "options": {"temperature": 0.1, "num_predict": 1024, "num_ctx": 16384},
+                },
+                timeout=180,
+            )
+            resp.raise_for_status()
+            content = resp.json()["message"]["content"]
+            data = _json.loads(content)
+            raw = data if isinstance(data, list) else data.get("topics", [])
+            for t in raw:
+                name = (t.get("topic") or "").strip()
+                count = int(t.get("count") or 1)
+                if not name:
+                    continue
+                key = name.lower()
+                if key in merged:
+                    merged[key] = (merged[key][0], merged[key][1] + count)
+                else:
+                    merged[key] = (name, count)
+            success += 1
+            logger.info(
+                "Ollama batch %d/%d: OK (%d comments)", i + 1, len(batches), len(batch)
+            )
+        except Exception as exc:
+            logger.warning("Ollama batch %d/%d failed: %s", i + 1, len(batches), exc)
+
+    if not merged:
+        return None
+
+    result = sorted(merged.values(), key=lambda x: x[1], reverse=True)
+    result = [{"topic": name, "count": count} for name, count in result[:top_n]]
+    logger.info(
+        "Ollama topic extraction: %d themes from %d/%d batches (%d total comments)",
+        len(result), success, len(batches), len(filtered),
+    )
+    return result
+
+
 def extract_topics_with_ai(
     texts: List[str],
     top_n: int = 10,
-    api_key: Optional[str] = None,
 ) -> List[Dict]:
     """
-    Use Gemini to extract semantic topic clusters from comment texts.
-    Returns the same [{"topic": str, "count": int}] shape as extract_trending_topics().
-    Falls back to word-frequency extraction on any failure.
-
-    `count` represents Gemini's estimated number of comments touching each theme.
+    Extract semantic topic clusters.
+      1. Local Ollama (Qwen2.5:7b) — semantic clustering
+      2. Word-frequency            — fallback, always available
     """
     if not texts:
         return []
 
-    # lazy import — tasks.py runs in Celery workers where google.generativeai may not
-    # be imported at module load time
     try:
-        import google.generativeai as genai
-    except ImportError:
-        logger.warning("google-generativeai not installed — falling back to word frequency")
-        return extract_trending_topics(texts, top_n)
+        from app.config import settings
+        ollama_url = getattr(settings, "OLLAMA_URL", "").strip()
+    except Exception:
+        ollama_url = ""
 
-    key = api_key
-    if not key:
-        try:
-            from app.config import settings
-            key = settings.GOOGLE_API_KEY
-        except Exception:
-            pass
+    if ollama_url:
+        result = _try_ollama(texts, top_n)
+        if result:
+            return result
+        logger.warning("Ollama failed — falling back to word-frequency topic extraction")
 
-    if not key:
-        logger.warning("GOOGLE_API_KEY not available — falling back to word frequency")
-        return extract_trending_topics(texts, top_n)
-
-    genai.configure(api_key=key)
-    model = genai.GenerativeModel(_AI_MODEL)
-
-    # Sample comments — random sample when corpus is large
-    sample = texts if len(texts) <= _AI_SAMPLE_SIZE else random.sample(texts, _AI_SAMPLE_SIZE)
-    total = len(texts)
-
-    numbered = "\n".join(f"{i+1}. {t[:200]}" for i, t in enumerate(sample))
-
-    prompt = f"""You are a social media analytics expert analyzing comments from a brand campaign.
-The comments may be in Arabic, French, Tunisian Arabizi (Franco-Arabic dialect), or English — analyze all of them together.
-
-Your task: identify the top {top_n} recurring THEMES or TOPICS that commenters are talking about.
-Focus on meaningful subjects (product features, price, emotions, events, people mentioned, complaints, compliments).
-Ignore generic filler words, greetings, and platform noise.
-
-IMPORTANT:
-- Write each topic label in English (2–5 words max, e.g. "Product quality", "Price concerns", "Delivery issues")
-- Estimate how many of the {total} total comments touch on each theme (integer)
-- Return ONLY valid JSON, no markdown, no explanation
-
-Sample ({len(sample)} of {total} comments):
-{numbered}
-
-Respond with exactly this JSON structure:
-{{"topics": [{{"topic": "Theme label", "count": N}}, ...]}}"""
-
-    for attempt in range(_AI_RETRIES):
-        try:
-            response = model.generate_content(prompt)
-            clean = re.sub(r"```(?:json)?\s*|\s*```", "", response.text).strip()
-            parsed = json.loads(clean)
-            topics = parsed.get("topics", [])
-            if not isinstance(topics, list) or not topics:
-                raise ValueError("empty topics list")
-            result = [
-                {"topic": str(t["topic"]), "count": int(t["count"])}
-                for t in topics
-                if isinstance(t, dict) and "topic" in t and "count" in t
-            ]
-            if result:
-                logger.info("AI topic extraction: %d themes from %d comments", len(result), total)
-                return result[:top_n]
-        except Exception as exc:
-            logger.warning("AI topic extraction attempt %d/%d failed: %s", attempt + 1, _AI_RETRIES, exc)
-
-    logger.warning("AI topic extraction failed — falling back to word frequency")
+    logger.info("Using word-frequency topic extraction")
     return extract_trending_topics(texts, top_n)

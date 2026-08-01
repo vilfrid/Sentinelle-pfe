@@ -1,9 +1,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { getCampaigns } from "../services/api";
+import { getCampaigns, getComments } from "../services/api";
 import { Heart } from "lucide-react";
 import { format } from "date-fns";
-import axios from "axios";
 
 type Comment = {
   id: number; author: string; raw_text: string;
@@ -27,14 +26,8 @@ export default function Comments() {
 
   const { data: comments = [], isLoading } = useQuery({
     queryKey: ["comments", campaignId, filter, sort],
-    queryFn: async () => {
-      const params: Record<string, string | number> = {};
-      if (campaignId) params.campaign_id = campaignId;
-      if (filter !== "all") params.sentiment = filter;
-      params.sort = sort;
-      const r = await axios.get("/api/comments/", { params });
-      return r.data;
-    },
+    queryFn: () =>
+      getComments(campaignId!, filter !== "all" ? filter : undefined, sort),
     enabled: !!campaignId,
   });
 

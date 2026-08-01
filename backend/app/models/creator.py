@@ -38,7 +38,7 @@ class Creator(Base):
     content_summary = Column(Text)                          # text used to create embedding
     content_embedding = Column(Text)                        # JSON-serialized float vector
 
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.utcnow())
 
     platform = relationship("Platform")
     campaign = relationship("Campaign")

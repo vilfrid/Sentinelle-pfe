@@ -39,6 +39,6 @@ class Metric(Base):
     # Alert flags
     negative_spike = Column(Integer, default=0)         # 1 if negative > threshold
 
-    computed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    computed_at = Column(DateTime, default=lambda: datetime.utcnow())
 
     campaign = relationship("Campaign", back_populates="metrics")

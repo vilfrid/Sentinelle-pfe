@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.models.comment import Comment
 from app.models.post import Post
+from app.core.privacy import pseudonymize
 from etl.cleaners import CLEANERS
 
 logger = logging.getLogger(__name__)
@@ -47,10 +48,9 @@ class ETLPipeline:
             comment = Comment(
                 post_id=post_id,
                 external_id=raw.get("external_id", ""),
-                author=raw.get("author", ""),
+                author=pseudonymize(raw.get("author", "")),   # RGPD: pseudonymise at ingestion
                 raw_text=raw["raw_text"],
                 cleaned_text=raw["raw_text"],
-                arabized_text=None,
                 language="raw",
                 likes=raw.get("likes", 0),
             )

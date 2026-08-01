@@ -5,7 +5,7 @@ from datetime import datetime
 
 class CreatorCreate(BaseModel):
     username: str
-    platform: str          # instagram | tiktok | youtube | facebook
+    platform: str          # instagram | youtube
     campaign_id: Optional[int] = None
     profile_url: Optional[str] = None
 
@@ -36,6 +36,9 @@ class CreatorOut(BaseModel):
     audience_mood: Optional[str]
     campaign_id: Optional[int]
     created_at: datetime
+    avg_views: int = 0
+    avg_likes: int = 0
+    avg_shares: int = 0
 
     @field_validator("top_topics", mode="before")
     @classmethod

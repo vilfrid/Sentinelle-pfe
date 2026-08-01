@@ -26,6 +26,6 @@ class Influencer(Base):
     last_match_score = Column(Float)
     last_matched_campaign_id = Column(Integer, ForeignKey("campaigns.id"))
 
-    scraped_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    scraped_at = Column(DateTime, default=lambda: datetime.utcnow())
 
     platform = relationship("Platform", back_populates="influencers")

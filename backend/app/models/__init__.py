@@ -6,8 +6,9 @@ from app.models.comment import Comment
 from app.models.metric import Metric
 from app.models.report import Report
 from app.models.influencer import Influencer
+from app.models.user import User
 
 __all__ = [
     "Platform", "Campaign", "Creator", "Post", "Comment",
-    "Metric", "Report", "Influencer",
+    "Metric", "Report", "Influencer", "User",
 ]

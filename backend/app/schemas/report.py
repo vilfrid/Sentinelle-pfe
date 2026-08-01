@@ -20,6 +20,11 @@ class ReportOut(BaseModel):
     what_worked: List[str]
     what_to_improve: List[str]
     recommendations: List[str]
+    risk_alerts: Optional[List[str]] = []
+    audience_insights: Optional[List[str]] = []
+    trending_now: Optional[List[str]] = []
+    fading_content: Optional[List[str]] = []
+    content_strategy: Optional[List[str]] = []
     metrics_snapshot: Dict[str, Any]
     status: str
     created_at: datetime

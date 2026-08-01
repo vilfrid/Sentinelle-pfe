@@ -9,7 +9,6 @@ class CommentOut(BaseModel):
     author: Optional[str]
     raw_text: str
     cleaned_text: Optional[str]
-    arabized_text: Optional[str]
     language: Optional[str]
     sentiment: Optional[str]
     sentiment_score: Optional[float]

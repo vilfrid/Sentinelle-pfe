@@ -14,6 +14,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install chromium
 
+# PostgreSQL drivers (async for FastAPI, sync for Celery) — separate layer to keep caches warm
+RUN pip install --no-cache-dir asyncpg==0.29.0 psycopg2-binary==2.9.9
+
 COPY . .
 
 EXPOSE 8000

@@ -3,11 +3,13 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getCampaigns, getMetrics, computeMetrics, getCommentTimeline, getTopics } from "../services/api";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { format } from "date-fns";
+import { useChartTheme } from "../contexts/ThemeContext";
 
 export default function Analytics() {
   const [campaignId, setCampaignId] = useState<number | null>(null);
   const [period, setPeriod] = useState("weekly");
   const qc = useQueryClient();
+  const chart = useChartTheme();
 
   const { data: campaigns = [] } = useQuery({ queryKey: ["campaigns"], queryFn: getCampaigns });
   const { data: metrics = [] } = useQuery({
@@ -107,10 +109,10 @@ export default function Analytics() {
           <h2 className="font-semibold mb-4">Sentiment Timeline</h2>
           <ResponsiveContainer width="100%" height={280}>
             <AreaChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
-              <XAxis dataKey="date" tick={{ fill: "#6b7280", fontSize: 12 }} />
-              <YAxis tick={{ fill: "#6b7280", fontSize: 12 }} />
-              <Tooltip contentStyle={{ background: "#1c2030", border: "1px solid #ffffff10" }} />
+              <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
+              <XAxis dataKey="date" tick={{ fill: chart.tick, fontSize: 12 }} />
+              <YAxis tick={{ fill: chart.tick, fontSize: 12 }} />
+              <Tooltip contentStyle={chart.tooltip} />
               <Area type="monotone" dataKey="positive" stackId="1" stroke="#22c55e" fill="#22c55e40" />
               <Area type="monotone" dataKey="neutral" stackId="1" stroke="#6b7280" fill="#6b728040" />
               <Area type="monotone" dataKey="negative" stackId="1" stroke="#ef4444" fill="#ef444440" />
@@ -124,8 +126,8 @@ export default function Analytics() {
           <h2 className="font-semibold mb-4">Trending Topics</h2>
           <div className="flex flex-wrap gap-2">
             {topics.topics.slice(0, 30).map((t: { topic: string; count: number }) => (
-              <span key={t.topic} className="bg-brand-600/20 text-brand-300 text-sm px-3 py-1 rounded-full">
-                {t.topic} <span className="text-brand-500 text-xs">({t.count})</span>
+              <span key={t.topic} className="bg-brand-600/15 text-brand-700 dark:bg-brand-600/20 dark:text-brand-300 text-sm px-3 py-1 rounded-full">
+                {t.topic} <span className="text-brand-600 dark:text-brand-500 text-xs">({t.count})</span>
               </span>
             ))}
           </div>

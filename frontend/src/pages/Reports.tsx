@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getReports, generateReport, getCampaigns } from "../services/api";
 import {
   FileText, CheckCircle, AlertTriangle, Lightbulb,
-  AlertOctagon, Users, TrendingUp, MessageSquare, Loader, Eye,
+  AlertOctagon, Users, TrendingUp, MessageSquare, Loader, Eye, Download,
 } from "lucide-react";
 import { format } from "date-fns";
+import html2pdf from "html2pdf.js";
 
 type CreatorSummary = {
   username: string; total_comments: number;
@@ -66,6 +67,31 @@ function MetricCard({ label, value, sub, color }: {
 }
 
 function ReportDetail({ report }: { report: Report }) {
+  const pdfRef = useRef<HTMLDivElement>(null);
+  const [downloading, setDownloading] = useState(false);
+
+  const handleDownloadPdf = async () => {
+    if (!pdfRef.current) return;
+    setDownloading(true);
+    try {
+      const safeName = report.title.replace(/[^\w؀-ۿ -]+/g, "").trim() || "report";
+      await html2pdf()
+        .set({
+          margin: 8,
+          filename: `${safeName}.pdf`,
+          image: { type: "jpeg", quality: 0.95 },
+          html2canvas: { scale: 2, useCORS: true, backgroundColor: "#0f1117" },
+          jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+          // pagebreak is a valid runtime option missing from the lib's own .d.ts
+          ...( { pagebreak: { mode: ["avoid-all", "css", "legacy"] } } as object ),
+        })
+        .from(pdfRef.current)
+        .save();
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   const snap = report.metrics_snapshot ?? {};
   const topics: Topic[] = snap.trending_topics ?? [];
   const creators: CreatorSummary[] = snap.creator_summaries ?? [];
@@ -81,6 +107,7 @@ function ReportDetail({ report }: { report: Report }) {
 
   return (
     <div className="space-y-5">
+      <div ref={pdfRef} className="space-y-5">
       {/* Header */}
       <div>
         <h2 className="font-bold text-xl">{report.title}</h2>
@@ -229,6 +256,21 @@ function ReportDetail({ report }: { report: Report }) {
           </div>
         </div>
       )}
+      </div>
+
+      {/* Download as PDF */}
+      <div className="flex justify-end pt-1">
+        <button
+          onClick={handleDownloadPdf}
+          disabled={downloading}
+          className="flex items-center gap-2 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+        >
+          {downloading
+            ? <><Loader size={14} className="animate-spin" /> Preparing PDF…</>
+            : <><Download size={14} /> Download PDF</>
+          }
+        </button>
+      </div>
     </div>
   );
 }
@@ -296,7 +338,7 @@ export default function Reports() {
           }
         </button>
         {generate.isPending && (
-          <p className="text-xs text-gray-500">Gemini is analyzing comments, topics, and creator data — this takes ~10 seconds.</p>
+          <p className="text-xs text-gray-500">Groq AI (Llama 3.3 70B) is analyzing comments, topics, and creator data — this takes ~10 seconds.</p>
         )}
       </div>
 

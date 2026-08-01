@@ -38,11 +38,8 @@ env/
 *.db.*.bak
 backups/
 
-# Data (scraped / processed)
-data/raw/
-data/processed/
-data/final/
-data/tiktok_session/
+# Data (scraped / processed / generated)
+data/
 
 # Claude Code worktrees
 .claude/worktrees/
